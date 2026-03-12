@@ -7,18 +7,7 @@
  +-------------------------------------------------------------------------+
 */
 
-/**
- * Normalize a MAC address to uppercase hex-only (no separators).
- * Handles formats: AA:BB:CC:DD:EE:FF, AA-BB-CC-DD-EE-FF, AABB.CCDD.EEFF
- *
- * @param string $mac
- * @return string  Normalized MAC (e.g. 'AABBCCDDEEFF') or empty string
- */
-function cereus_ipam_normalize_mac($mac) {
-	$mac = strtoupper(trim($mac));
-	$mac = preg_replace('/[^A-F0-9]/', '', $mac);
-	return (strlen($mac) === 12) ? $mac : '';
-}
+/* cereus_ipam_normalize_mac() is defined in validation.php */
 
 /**
  * Run conflict detection for a subnet after a scan.
