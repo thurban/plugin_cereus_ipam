@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.4.0] - 2026-03-12
+
+### Added
+- **Visual Network Map** — interactive d3.js subnet visualization (Professional+)
+  - Tile Map: /24 block overview grid with utilization heatmap for large subnets (/16-/21)
+  - Per-IP grid: color-coded blocks for individual IPs (/22-/32)
+  - Drill-down: click any /24 tile to expand into per-IP view
+  - Tooltips: hover to see IP, hostname, MAC, owner, state
+  - Click any IP block to edit or create an address
+  - Conflict detection: rogue IPs shown in orange
+  - PNG export for all views
+- **Hilbert Curve Heatmap** — space-filling curve visualization (Enterprise)
+  - Renders entire /16 (65,536 IPs) in a single compact view
+  - Preserves IP adjacency — nearby IPs stay near each other visually
+  - Canvas-based rendering for performance with large datasets
+  - SVG rendering with full interactivity for /24 and smaller
+  - Same tooltips and click-to-edit as tile map
+- License gating: Visual Map requires Professional, Hilbert requires Enterprise
+  - Community users see upgrade prompt with lock icon
+  - Professional users see Hilbert toggle disabled with Enterprise prompt
+- Subnet list quick-action icons now license-gated (Visual Map icon only shown for Professional+)
+
 ## [1.3.0] - 2026-03-12
 
 ### Fixed

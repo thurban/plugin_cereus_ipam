@@ -1,4 +1,4 @@
-# Cereus IPAM — Feature Status (v1.3.0)
+# Cereus IPAM — Feature Status (v1.4.0)
 
 ## Community Tier (Free)
 
@@ -45,12 +45,14 @@
 | Column Filtering (VLAN, VRF, owner, device type, location) | DONE |
 | Import from phpIPAM and NetBox CSV formats | DONE |
 | Unlimited changelog retention | DONE |
+| Visual Network Map — Tile Map (d3.js, /24 overview, per-IP grid, drill-down) | DONE |
 | Reports: PDF Export (TCPDF) | NOT YET |
 
 ## Enterprise Tier
 
 | Feature | Status |
 |---------|--------|
+| Hilbert Curve Heatmap (d3.js, space-filling, full /16 at a glance) | DONE |
 | Webhook Callbacks (JSON POST, test button) | DONE |
 | REST API Endpoints (sections, subnets, addresses, VLANs, VRFs) | DONE |
 | Maintenance Windows (scan/alert suppression) | DONE |

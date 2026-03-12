@@ -72,6 +72,12 @@ switch ($action) {
 		cereus_ipam_address_visual();
 		bottom_footer();
 		break;
+	case 'visual_data':
+		cereus_ipam_address_visual_data();
+		break;
+	case 'visual_data_chunk':
+		cereus_ipam_address_visual_data_chunk();
+		break;
 	case 'ping':
 		cereus_ipam_address_ping_ajax();
 		break;
@@ -1483,6 +1489,19 @@ function cereus_ipam_address_visual() {
 		exit;
 	}
 
+	/* License gate: Professional+ for visual map */
+	if (!cereus_ipam_license_has_visual_map()) {
+		html_start_box(__('Visual Network Map', 'cereus_ipam'), '100%', '', '3', 'center', '');
+		print '<tr><td class="center" style="padding:40px;">';
+		print '<i class="fa fa-lock" style="font-size:48px;color:#ccc;"></i><br><br>';
+		print '<span style="font-size:16px;color:#666;">' . __('Visual Network Map requires a Professional license.', 'cereus_ipam') . '</span><br><br>';
+		print '<a href="https://www.urban-software.com/products/cereus-ipam/" class="ui-button" target="_blank">' . __('Upgrade', 'cereus_ipam') . '</a>';
+		print ' <input type="button" class="ui-button" value="' . __esc('Back', 'cereus_ipam') . '" onclick="document.location=\'cereus_ipam_addresses.php?subnet_id=' . (int) $subnet_id . '\'">';
+		print '</td></tr>';
+		html_end_box();
+		return;
+	}
+
 	$subnet = db_fetch_row_prepared("SELECT * FROM plugin_cereus_ipam_subnets WHERE id = ?", array($subnet_id));
 	if (!cacti_sizeof($subnet)) {
 		raise_message('cereus_ipam_nf', __('Subnet not found.', 'cereus_ipam'), MESSAGE_LEVEL_ERROR);
@@ -1493,7 +1512,6 @@ function cereus_ipam_address_visual() {
 	$version = cereus_ipam_ip_version($subnet['subnet']);
 	$mask    = (int) $subnet['mask'];
 
-	/* Visual grid only works for IPv4 subnets /16 to /32 */
 	if ($version != 4 || $mask < 16) {
 		raise_message('cereus_ipam_visual_unsupported', __('Visual map is only available for IPv4 subnets /16 to /32.', 'cereus_ipam'), MESSAGE_LEVEL_ERROR);
 		header('Location: cereus_ipam_addresses.php?subnet_id=' . $subnet_id);
@@ -1501,29 +1519,13 @@ function cereus_ipam_address_visual() {
 	}
 
 	$util = cereus_ipam_subnet_utilization($subnet_id);
+	$has_hilbert = cereus_ipam_license_has_hilbert_map();
+	$is_large = ($mask < 22); /* /16-/21: show tile overview first */
 
-	/* State color map */
-	$state_colors = array(
-		'active'    => '#4CAF50',
-		'reserved'  => '#2196F3',
-		'dhcp'      => '#9C27B0',
-		'offline'   => '#F44336',
-		'available' => '#BDBDBD',
-	);
+	/* Include d3.js */
+	print '<script src="' . html_escape($config['url_path']) . 'include/js/d3.js"></script>';
 
-	/* Fetch all addresses in this subnet indexed by IP */
-	$addresses_raw = db_fetch_assoc_prepared(
-		"SELECT ip, hostname, mac_address, owner, state, id FROM plugin_cereus_ipam_addresses WHERE subnet_id = ?",
-		array($subnet_id)
-	);
-	$addr_map = array();
-	if (cacti_sizeof($addresses_raw)) {
-		foreach ($addresses_raw as $a) {
-			$addr_map[$a['ip']] = $a;
-		}
-	}
-
-	/* Header box with "Table View" toggle */
+	/* Header box with controls */
 	html_start_box(
 		__('Visual Map: %s/%s', html_escape($subnet['subnet']), $mask, 'cereus_ipam')
 		. ' (' . $util['used'] . '/' . $util['total'] . ' ' . __('used', 'cereus_ipam') . ')',
@@ -1533,181 +1535,815 @@ function cereus_ipam_address_visual() {
 	<tr class='even'>
 		<td style='padding:8px;'>
 			<input type='button' class='ui-button' id='table_view' value='<?php print __esc('Table View', 'cereus_ipam'); ?>'>
-			<span style='margin-left:15px;'>
+			<input type='button' class='ui-button ui-button-active' id='btn_tilemap' value='<?php print __esc('Tile Map', 'cereus_ipam'); ?>' style='margin-left:5px;'>
+			<?php if ($has_hilbert) { ?>
+			<input type='button' class='ui-button' id='btn_hilbert' value='<?php print __esc('Hilbert Heatmap', 'cereus_ipam'); ?>' style='margin-left:5px;'>
+			<?php } else { ?>
+			<input type='button' class='ui-button' id='btn_hilbert' value='<?php print __esc('Hilbert Heatmap', 'cereus_ipam'); ?>' style='margin-left:5px;opacity:0.5;' disabled title='<?php print __esc('Hilbert Heatmap requires an Enterprise license.', 'cereus_ipam'); ?>'>
+			<?php } ?>
+			<?php if ($is_large) { ?>
+			<input type='button' class='ui-button' id='btn_back_overview' value='<?php print __esc('Back to Overview', 'cereus_ipam'); ?>' style='margin-left:10px;display:none;'>
+			<?php } ?>
+			<input type='button' class='ui-button' id='btn_export_png' value='<?php print __esc('Export PNG', 'cereus_ipam'); ?>' style='margin-left:10px;'>
+			<span style='margin-left:20px;' id='cipam_legend'>
 				<span style='display:inline-block;width:12px;height:12px;background:#4CAF50;border-radius:2px;vertical-align:middle;'></span> <?php print __('Active', 'cereus_ipam'); ?>
-				<span style='display:inline-block;width:12px;height:12px;background:#2196F3;border-radius:2px;vertical-align:middle;margin-left:10px;'></span> <?php print __('Reserved', 'cereus_ipam'); ?>
-				<span style='display:inline-block;width:12px;height:12px;background:#9C27B0;border-radius:2px;vertical-align:middle;margin-left:10px;'></span> <?php print __('DHCP', 'cereus_ipam'); ?>
-				<span style='display:inline-block;width:12px;height:12px;background:#F44336;border-radius:2px;vertical-align:middle;margin-left:10px;'></span> <?php print __('Offline', 'cereus_ipam'); ?>
-				<span style='display:inline-block;width:12px;height:12px;background:#BDBDBD;border-radius:2px;vertical-align:middle;margin-left:10px;'></span> <?php print __('Available', 'cereus_ipam'); ?>
+				<span style='display:inline-block;width:12px;height:12px;background:#2196F3;border-radius:2px;vertical-align:middle;margin-left:8px;'></span> <?php print __('Reserved', 'cereus_ipam'); ?>
+				<span style='display:inline-block;width:12px;height:12px;background:#9C27B0;border-radius:2px;vertical-align:middle;margin-left:8px;'></span> <?php print __('DHCP', 'cereus_ipam'); ?>
+				<span style='display:inline-block;width:12px;height:12px;background:#F44336;border-radius:2px;vertical-align:middle;margin-left:8px;'></span> <?php print __('Offline', 'cereus_ipam'); ?>
+				<span style='display:inline-block;width:12px;height:12px;background:#E0E0E0;border-radius:2px;vertical-align:middle;margin-left:8px;border:1px solid #bbb;'></span> <?php print __('Available', 'cereus_ipam'); ?>
+				<span style='display:inline-block;width:12px;height:12px;background:#FF9800;border-radius:2px;vertical-align:middle;margin-left:8px;'></span> <?php print __('Conflict', 'cereus_ipam'); ?>
 			</span>
-			<script type='text/javascript'>
-			$(function() {
-				$('#table_view').click(function() {
-					document.location = 'cereus_ipam_addresses.php?subnet_id=<?php print $subnet_id; ?>';
-				});
-			});
-			</script>
 		</td>
 	</tr>
 	<?php
 	html_end_box();
 
-	/* Determine rendering mode */
-	if ($mask >= 22) {
-		/* Individual IP grid for /22 to /32 (up to 1024 IPs) */
-		cereus_ipam_visual_grid_individual($subnet, $addr_map, $state_colors, $subnet_id);
-	} else {
-		/* Summary per /24 sub-block for subnets larger than /22 */
-		cereus_ipam_visual_grid_summary($subnet, $subnet_id);
-	}
-}
+	/* Tooltip container (shared by all views) */
+	print '<div id="cipam_tooltip" style="position:fixed;display:none;background:#333;color:#fff;padding:8px 12px;border-radius:4px;font-size:12px;pointer-events:none;z-index:10000;max-width:350px;box-shadow:0 2px 8px rgba(0,0,0,0.3);"></div>';
 
-/**
- * Render individual IP blocks for subnets /22 to /32.
- */
-function cereus_ipam_visual_grid_individual($subnet, $addr_map, $state_colors, $subnet_id) {
-	$mask    = (int) $subnet['mask'];
-	$range   = cereus_ipam_cidr_to_range($subnet['subnet'], $mask);
-	$start   = cereus_ipam_ip_to_gmp($range['first']);
-	$end     = cereus_ipam_ip_to_gmp($range['last']);
-	$total   = gmp_intval(gmp_add(gmp_sub($end, $start), 1));
-
-	/* Determine grid columns based on subnet size */
-	if ($mask >= 28) {
-		$cols = 8;
-	} elseif ($mask >= 25) {
-		$cols = 16;
-	} else {
-		$cols = 16;
-	}
-
-	/* Block size adapts to subnet size */
-	$block_size = ($total <= 64) ? 32 : (($total <= 256) ? 24 : 20);
-
+	/* Map container */
 	html_start_box('', '100%', '', '3', 'center', '');
 	print '<tr><td style="padding:10px;">';
-	print '<div class="cipam-visual-grid" style="display:flex;flex-wrap:wrap;gap:2px;max-width:' . ($cols * ($block_size + 4)) . 'px;">';
-
-	$current = $start;
-	while (gmp_cmp($current, $end) <= 0) {
-		$ip = cereus_ipam_gmp_to_ip($current, 4);
-		$octets = explode('.', $ip);
-		$last_octet = $octets[3];
-
-		if (isset($addr_map[$ip])) {
-			$addr  = $addr_map[$ip];
-			$color = $state_colors[$addr['state']] ?? '#BDBDBD';
-			$title = html_escape($ip);
-			if (!empty($addr['hostname'])) {
-				$title .= ' | ' . html_escape($addr['hostname']);
-			}
-			if (!empty($addr['mac_address'])) {
-				$title .= ' | ' . html_escape($addr['mac_address']);
-			}
-			if (!empty($addr['owner'])) {
-				$title .= ' | ' . html_escape($addr['owner']);
-			}
-			$title .= ' | ' . html_escape(ucfirst($addr['state']));
-			$href = 'cereus_ipam_addresses.php?action=edit&id=' . $addr['id'] . '&subnet_id=' . $subnet_id;
-		} else {
-			$color = '#BDBDBD';
-			$title = html_escape($ip) . ' | ' . __('Available', 'cereus_ipam');
-			$href = 'cereus_ipam_addresses.php?action=edit&id=0&subnet_id=' . $subnet_id . '&prefill_ip=' . urlencode($ip);
-		}
-
-		print '<a href="' . $href . '" title="' . $title . '" '
-			. 'style="display:inline-flex;align-items:center;justify-content:center;'
-			. 'width:' . $block_size . 'px;height:' . $block_size . 'px;'
-			. 'background:' . $color . ';border-radius:3px;'
-			. 'color:#fff;font-size:' . ($block_size >= 28 ? '10' : '8') . 'px;text-decoration:none;'
-			. 'font-weight:bold;text-shadow:0 0 2px rgba(0,0,0,0.4);'
-			. 'transition:transform 0.1s;cursor:pointer;" '
-			. 'onmouseover="this.style.transform=\'scale(1.3)\';this.style.zIndex=\'10\';" '
-			. 'onmouseout="this.style.transform=\'scale(1)\';this.style.zIndex=\'auto\';">'
-			. $last_octet . '</a>';
-
-		$current = gmp_add($current, 1);
-	}
-
-	print '</div>';
+	print '<div id="cipam_map_container" style="min-height:200px;position:relative;"></div>';
+	print '<div id="cipam_loading" style="text-align:center;padding:40px;color:#999;"><i class="fa fa-spinner fa-spin fa-2x"></i><br>' . __('Loading...', 'cereus_ipam') . '</div>';
 	print '</td></tr>';
 	html_end_box();
+
+	/* Embed the full d3.js visual map JavaScript */
+	?>
+	<script type='text/javascript'>
+	$(function() {
+		var subnetId = <?php print (int) $subnet_id; ?>;
+		var subnetCidr = '<?php print html_escape($subnet['subnet'] . '/' . $mask); ?>';
+		var mask = <?php print (int) $mask; ?>;
+		var isLarge = <?php print $is_large ? 'true' : 'false'; ?>;
+		var hasHilbert = <?php print $has_hilbert ? 'true' : 'false'; ?>;
+		var currentView = 'tilemap'; /* tilemap | hilbert */
+		var drilledBlock = null; /* current /24 block when drilled in */
+
+		var stateColors = {
+			'active':    '#4CAF50',
+			'reserved':  '#2196F3',
+			'dhcp':      '#9C27B0',
+			'offline':   '#F44336',
+			'available': '#E0E0E0',
+			'conflict':  '#FF9800'
+		};
+
+		/* Utilization gradient: 0% = #E0E0E0 (gray) → green → yellow → orange → red at 100% */
+		function utilColor(pct) {
+			if (pct <= 0) return '#E0E0E0';
+			if (pct <= 50) {
+				var t = pct / 50;
+				return d3.interpolateRgb('#4CAF50', '#FFC107')(t);
+			}
+			var t2 = (pct - 50) / 50;
+			return d3.interpolateRgb('#FFC107', '#F44336')(t2);
+		}
+
+		var $container = $('#cipam_map_container');
+		var $loading = $('#cipam_loading');
+		var $tooltip = $('#cipam_tooltip');
+
+		function showTooltip(html, event) {
+			$tooltip.html(html).css({
+				left: Math.min(event.clientX + 12, window.innerWidth - 370) + 'px',
+				top: (event.clientY + 12) + 'px',
+				display: 'block'
+			});
+		}
+		function hideTooltip() { $tooltip.hide(); }
+
+		/* ========== Data loading ========== */
+
+		function loadOverviewData(callback) {
+			$.ajax({
+				url: 'cereus_ipam_addresses.php',
+				data: { action: 'visual_data', subnet_id: subnetId },
+				dataType: 'json',
+				success: function(data) { $loading.hide(); callback(data); },
+				error: function() { $loading.html('<span style="color:#F44336;">Failed to load data.</span>'); }
+			});
+		}
+
+		function loadChunkData(blockPrefix, callback) {
+			$.ajax({
+				url: 'cereus_ipam_addresses.php',
+				data: { action: 'visual_data_chunk', subnet_id: subnetId, block: blockPrefix },
+				dataType: 'json',
+				success: function(data) { callback(data); },
+				error: function() { $container.html('<span style="color:#F44336;">Failed to load block data.</span>'); }
+			});
+		}
+
+		/* ========== Tile Map: /24 overview for large subnets ========== */
+
+		function renderTileOverview(data) {
+			$container.empty();
+			drilledBlock = null;
+			$('#btn_back_overview').hide();
+
+			var blocks = data.summary_24 || [];
+			if (!blocks.length) {
+				$container.html('<div style="text-align:center;padding:40px;color:#999;"><?php print __esc('No /24 blocks found.', 'cereus_ipam'); ?></div>');
+				return;
+			}
+
+			/* Determine grid: /16 = 256 blocks (16x16), /20 = 16 blocks (4x4), etc. */
+			var count = blocks.length;
+			var cols = Math.ceil(Math.sqrt(count));
+			if (cols > 16) cols = 16;
+			var tileSize = Math.max(32, Math.min(60, Math.floor(900 / cols)));
+			var gap = 3;
+
+			var svg = d3.select('#cipam_map_container').append('svg')
+				.attr('width', cols * (tileSize + gap))
+				.attr('height', Math.ceil(count / cols) * (tileSize + gap))
+				.attr('id', 'cipam_svg');
+
+			var tiles = svg.selectAll('g').data(blocks).enter().append('g')
+				.attr('transform', function(d, i) {
+					var x = (i % cols) * (tileSize + gap);
+					var y = Math.floor(i / cols) * (tileSize + gap);
+					return 'translate(' + x + ',' + y + ')';
+				})
+				.style('cursor', 'pointer');
+
+			tiles.append('rect')
+				.attr('width', tileSize)
+				.attr('height', tileSize)
+				.attr('rx', 3)
+				.attr('fill', function(d) { return utilColor(d.pct); })
+				.attr('stroke', '#999')
+				.attr('stroke-width', 0.5);
+
+			/* Label: third octet */
+			tiles.append('text')
+				.attr('x', tileSize / 2)
+				.attr('y', tileSize / 2 - 2)
+				.attr('text-anchor', 'middle')
+				.attr('dominant-baseline', 'middle')
+				.attr('font-size', Math.max(8, tileSize / 5) + 'px')
+				.attr('font-weight', 'bold')
+				.attr('fill', function(d) { return d.pct > 60 ? '#fff' : '#333'; })
+				.attr('pointer-events', 'none')
+				.text(function(d) {
+					var parts = d.prefix.split('.');
+					return '.' + parts[2] + '.x';
+				});
+
+			/* Pct label below */
+			tiles.append('text')
+				.attr('x', tileSize / 2)
+				.attr('y', tileSize / 2 + Math.max(8, tileSize / 5))
+				.attr('text-anchor', 'middle')
+				.attr('font-size', Math.max(7, tileSize / 6) + 'px')
+				.attr('fill', function(d) { return d.pct > 60 ? 'rgba(255,255,255,0.8)' : '#666'; })
+				.attr('pointer-events', 'none')
+				.text(function(d) { return d.pct + '%'; });
+
+			tiles.on('mouseover', function(event, d) {
+				d3.select(this).select('rect').attr('stroke', '#333').attr('stroke-width', 2);
+				var html = '<strong>' + d.prefix + '/24</strong><br>'
+					+ '<?php print __esc('Utilization', 'cereus_ipam'); ?>: ' + d.pct + '%<br>'
+					+ '<span style="color:#4CAF50;">●</span> ' + d.active + ' '
+					+ '<span style="color:#2196F3;">●</span> ' + d.reserved + ' '
+					+ '<span style="color:#9C27B0;">●</span> ' + d.dhcp + ' '
+					+ '<span style="color:#F44336;">●</span> ' + d.offline + ' '
+					+ '<span style="color:#bbb;">●</span> ' + (256 - d.used) + ' <?php print __esc('free', 'cereus_ipam'); ?>';
+				showTooltip(html, event);
+			})
+			.on('mousemove', function(event) {
+				$tooltip.css({ left: Math.min(event.clientX + 12, window.innerWidth - 370) + 'px', top: (event.clientY + 12) + 'px' });
+			})
+			.on('mouseout', function() {
+				d3.select(this).select('rect').attr('stroke', '#999').attr('stroke-width', 0.5);
+				hideTooltip();
+			})
+			.on('click', function(event, d) {
+				hideTooltip();
+				drillIntoBlock(d.prefix);
+			});
+		}
+
+		/* ========== Tile Map: per-IP grid (for /24 or drill-down) ========== */
+
+		function renderIpGrid(addresses, blockPrefix) {
+			$container.empty();
+			drilledBlock = blockPrefix || null;
+
+			if (isLarge && blockPrefix) {
+				$('#btn_back_overview').show();
+			}
+
+			var total = addresses.length;
+			if (!total) {
+				$container.html('<div style="text-align:center;padding:40px;color:#999;"><?php print __esc('No addresses in this block.', 'cereus_ipam'); ?></div>');
+				return;
+			}
+
+			var cols = 16;
+			if (total <= 16) cols = total;
+			else if (total <= 64) cols = 8;
+
+			var blockSize = (total <= 64) ? 36 : ((total <= 256) ? 28 : 22);
+			var gap = 2;
+
+			var svg = d3.select('#cipam_map_container').append('svg')
+				.attr('width', cols * (blockSize + gap) + gap)
+				.attr('height', Math.ceil(total / cols) * (blockSize + gap) + gap)
+				.attr('id', 'cipam_svg');
+
+			var blocks = svg.selectAll('g').data(addresses).enter().append('g')
+				.attr('transform', function(d, i) {
+					var x = (i % cols) * (blockSize + gap) + gap;
+					var y = Math.floor(i / cols) * (blockSize + gap) + gap;
+					return 'translate(' + x + ',' + y + ')';
+				})
+				.style('cursor', 'pointer');
+
+			blocks.append('rect')
+				.attr('width', blockSize)
+				.attr('height', blockSize)
+				.attr('rx', 3)
+				.attr('fill', function(d) { return stateColors[d.state] || '#E0E0E0'; })
+				.attr('stroke', 'rgba(0,0,0,0.1)')
+				.attr('stroke-width', 0.5);
+
+			/* Last octet label */
+			blocks.append('text')
+				.attr('x', blockSize / 2)
+				.attr('y', blockSize / 2 + 1)
+				.attr('text-anchor', 'middle')
+				.attr('dominant-baseline', 'middle')
+				.attr('font-size', (blockSize >= 28 ? 10 : 8) + 'px')
+				.attr('font-weight', 'bold')
+				.attr('fill', function(d) { return d.state === 'available' ? '#999' : '#fff'; })
+				.attr('pointer-events', 'none')
+				.attr('style', function(d) { return d.state === 'available' ? '' : 'text-shadow:0 0 2px rgba(0,0,0,0.4)'; })
+				.text(function(d) { return d.ip.split('.').pop(); });
+
+			blocks.on('mouseover', function(event, d) {
+				d3.select(this).select('rect').attr('stroke', '#333').attr('stroke-width', 2);
+				var html = '<strong>' + d.ip + '</strong>';
+				if (d.hostname) html += '<br>' + d.hostname;
+				if (d.mac) html += '<br>' + d.mac;
+				if (d.owner) html += '<br>' + d.owner;
+				html += '<br><em>' + d.state.charAt(0).toUpperCase() + d.state.slice(1) + '</em>';
+				showTooltip(html, event);
+			})
+			.on('mousemove', function(event) {
+				$tooltip.css({ left: Math.min(event.clientX + 12, window.innerWidth - 370) + 'px', top: (event.clientY + 12) + 'px' });
+			})
+			.on('mouseout', function() {
+				d3.select(this).select('rect').attr('stroke', 'rgba(0,0,0,0.1)').attr('stroke-width', 0.5);
+				hideTooltip();
+			})
+			.on('click', function(event, d) {
+				hideTooltip();
+				if (d.id && d.id > 0) {
+					document.location = 'cereus_ipam_addresses.php?action=edit&id=' + d.id + '&subnet_id=' + subnetId;
+				} else {
+					document.location = 'cereus_ipam_addresses.php?action=edit&id=0&subnet_id=' + subnetId + '&prefill_ip=' + encodeURIComponent(d.ip);
+				}
+			});
+		}
+
+		function drillIntoBlock(prefix) {
+			$container.html('<div style="text-align:center;padding:20px;color:#999;"><i class="fa fa-spinner fa-spin"></i> <?php print __esc('Loading...', 'cereus_ipam'); ?></div>');
+			loadChunkData(prefix, function(data) {
+				if (currentView === 'hilbert' && hasHilbert) {
+					renderHilbert(data.addresses || [], prefix);
+				} else {
+					renderIpGrid(data.addresses || [], prefix);
+				}
+			});
+		}
+
+		/* ========== Hilbert Curve Heatmap (Enterprise) ========== */
+
+		/* Convert linear index d to (x,y) on a Hilbert curve of order n */
+		function hilbertD2XY(n, d) {
+			var x = 0, y = 0, s, rx, ry, t = d;
+			for (s = 1; s < n; s *= 2) {
+				rx = 1 & (Math.floor(t / 2));
+				ry = 1 & (t ^ rx);
+				if (ry === 0) {
+					if (rx === 1) { x = s - 1 - x; y = s - 1 - y; }
+					var tmp = x; x = y; y = tmp;
+				}
+				x += s * rx;
+				y += s * ry;
+				t = Math.floor(t / 4);
+			}
+			return { x: x, y: y };
+		}
+
+		function renderHilbert(addresses, blockPrefix) {
+			$container.empty();
+			drilledBlock = blockPrefix || null;
+
+			if (isLarge && blockPrefix) {
+				$('#btn_back_overview').show();
+			} else if (isLarge && !blockPrefix) {
+				$('#btn_back_overview').hide();
+			}
+
+			var total = addresses.length;
+			if (!total) {
+				$container.html('<div style="text-align:center;padding:40px;color:#999;"><?php print __esc('No addresses.', 'cereus_ipam'); ?></div>');
+				return;
+			}
+
+			/* Hilbert order: smallest power of 2 that fits total */
+			var order = 1;
+			while (order * order < total) order *= 2;
+
+			/* Cell size adapts: large for /24 (256 IPs → 16x16), small for /16 (65536 → 256x256) */
+			var cellSize;
+			if (total <= 256) cellSize = 28;
+			else if (total <= 1024) cellSize = 14;
+			else if (total <= 4096) cellSize = 7;
+			else cellSize = 3;
+
+			var svgSize = order * cellSize;
+
+			/* Build lookup map for fast access */
+			var addrLookup = {};
+			addresses.forEach(function(a, i) { addrLookup[i] = a; });
+
+			/* Use canvas for large datasets (>1024 IPs) for performance */
+			if (total > 1024) {
+				var canvas = document.createElement('canvas');
+				canvas.id = 'cipam_hilbert_canvas';
+				canvas.width = svgSize;
+				canvas.height = svgSize;
+				canvas.style.cursor = 'crosshair';
+				canvas.style.border = '1px solid #ddd';
+				canvas.style.borderRadius = '4px';
+				$container.append(canvas);
+
+				var ctx = canvas.getContext('2d');
+				ctx.fillStyle = '#E0E0E0';
+				ctx.fillRect(0, 0, svgSize, svgSize);
+
+				/* Render all cells */
+				for (var i = 0; i < total; i++) {
+					var pos = hilbertD2XY(order, i);
+					var a = addrLookup[i];
+					ctx.fillStyle = a ? (stateColors[a.state] || '#E0E0E0') : '#E0E0E0';
+					ctx.fillRect(pos.x * cellSize, pos.y * cellSize, cellSize, cellSize);
+				}
+
+				/* Grid lines for larger cells */
+				if (cellSize >= 5) {
+					ctx.strokeStyle = 'rgba(0,0,0,0.05)';
+					ctx.lineWidth = 0.5;
+					for (var i = 0; i < total; i++) {
+						var pos = hilbertD2XY(order, i);
+						ctx.strokeRect(pos.x * cellSize, pos.y * cellSize, cellSize, cellSize);
+					}
+				}
+
+				/* Mouse interaction on canvas */
+				$(canvas).on('mousemove', function(event) {
+					var rect = canvas.getBoundingClientRect();
+					var mx = event.clientX - rect.left;
+					var my = event.clientY - rect.top;
+					var gx = Math.floor(mx / cellSize);
+					var gy = Math.floor(my / cellSize);
+
+					/* Reverse: find index from (x,y) via brute scan for small, or xy2d for perf */
+					var idx = hilbertXY2D(order, gx, gy);
+					if (idx >= 0 && idx < total && addrLookup[idx]) {
+						var d = addrLookup[idx];
+						var html = '<strong>' + d.ip + '</strong>';
+						if (d.hostname) html += '<br>' + d.hostname;
+						if (d.mac) html += '<br>' + d.mac;
+						html += '<br><em>' + d.state.charAt(0).toUpperCase() + d.state.slice(1) + '</em>';
+						showTooltip(html, event);
+					} else {
+						hideTooltip();
+					}
+				}).on('mouseout', function() {
+					hideTooltip();
+				}).on('click', function(event) {
+					var rect = canvas.getBoundingClientRect();
+					var mx = event.clientX - rect.left;
+					var my = event.clientY - rect.top;
+					var gx = Math.floor(mx / cellSize);
+					var gy = Math.floor(my / cellSize);
+					var idx = hilbertXY2D(order, gx, gy);
+					if (idx >= 0 && idx < total && addrLookup[idx]) {
+						var d = addrLookup[idx];
+						hideTooltip();
+						if (d.id && d.id > 0) {
+							document.location = 'cereus_ipam_addresses.php?action=edit&id=' + d.id + '&subnet_id=' + subnetId;
+						} else {
+							document.location = 'cereus_ipam_addresses.php?action=edit&id=0&subnet_id=' + subnetId + '&prefill_ip=' + encodeURIComponent(d.ip);
+						}
+					}
+				});
+			} else {
+				/* SVG for small datasets — better interaction */
+				var svg = d3.select('#cipam_map_container').append('svg')
+					.attr('width', svgSize)
+					.attr('height', svgSize)
+					.attr('id', 'cipam_svg')
+					.style('border', '1px solid #ddd')
+					.style('border-radius', '4px');
+
+				var cellData = [];
+				for (var i = 0; i < total; i++) {
+					var pos = hilbertD2XY(order, i);
+					cellData.push({ idx: i, x: pos.x, y: pos.y, addr: addrLookup[i] || null });
+				}
+
+				var cells = svg.selectAll('rect').data(cellData).enter().append('rect')
+					.attr('x', function(d) { return d.x * cellSize; })
+					.attr('y', function(d) { return d.y * cellSize; })
+					.attr('width', cellSize)
+					.attr('height', cellSize)
+					.attr('fill', function(d) { return d.addr ? (stateColors[d.addr.state] || '#E0E0E0') : '#E0E0E0'; })
+					.attr('stroke', 'rgba(0,0,0,0.05)')
+					.attr('stroke-width', 0.5)
+					.style('cursor', 'pointer');
+
+				cells.on('mouseover', function(event, d) {
+					if (!d.addr) return;
+					d3.select(this).attr('stroke', '#333').attr('stroke-width', 2);
+					var html = '<strong>' + d.addr.ip + '</strong>';
+					if (d.addr.hostname) html += '<br>' + d.addr.hostname;
+					if (d.addr.mac) html += '<br>' + d.addr.mac;
+					html += '<br><em>' + d.addr.state.charAt(0).toUpperCase() + d.addr.state.slice(1) + '</em>';
+					showTooltip(html, event);
+				})
+				.on('mousemove', function(event) {
+					$tooltip.css({ left: Math.min(event.clientX + 12, window.innerWidth - 370) + 'px', top: (event.clientY + 12) + 'px' });
+				})
+				.on('mouseout', function() {
+					d3.select(this).attr('stroke', 'rgba(0,0,0,0.05)').attr('stroke-width', 0.5);
+					hideTooltip();
+				})
+				.on('click', function(event, d) {
+					if (!d.addr) return;
+					hideTooltip();
+					if (d.addr.id && d.addr.id > 0) {
+						document.location = 'cereus_ipam_addresses.php?action=edit&id=' + d.addr.id + '&subnet_id=' + subnetId;
+					} else {
+						document.location = 'cereus_ipam_addresses.php?action=edit&id=0&subnet_id=' + subnetId + '&prefill_ip=' + encodeURIComponent(d.addr.ip);
+					}
+				});
+			}
+		}
+
+		/* Reverse Hilbert: (x,y) → index d */
+		function hilbertXY2D(n, x, y) {
+			var d = 0, s, rx, ry;
+			for (s = n / 2; s > 0; s = Math.floor(s / 2)) {
+				rx = (x & s) > 0 ? 1 : 0;
+				ry = (y & s) > 0 ? 1 : 0;
+				d += s * s * ((3 * rx) ^ ry);
+				/* Rotate */
+				if (ry === 0) {
+					if (rx === 1) { x = s - 1 - x; y = s - 1 - y; }
+					var tmp = x; x = y; y = tmp;
+				}
+			}
+			return d;
+		}
+
+		/* ========== PNG Export ========== */
+
+		$('#btn_export_png').click(function() {
+			var svg = document.getElementById('cipam_svg');
+			var canvas = document.getElementById('cipam_hilbert_canvas');
+
+			if (canvas) {
+				/* Already a canvas — direct export */
+				var link = document.createElement('a');
+				link.download = 'ipam_visual_' + subnetCidr.replace(/\//g, '_') + '.png';
+				link.href = canvas.toDataURL('image/png');
+				link.click();
+			} else if (svg) {
+				/* Convert SVG to canvas then PNG */
+				var svgData = new XMLSerializer().serializeToString(svg);
+				var img = new Image();
+				var svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+				var url = URL.createObjectURL(svgBlob);
+				img.onload = function() {
+					var c = document.createElement('canvas');
+					c.width = svg.getAttribute('width');
+					c.height = svg.getAttribute('height');
+					var ctx = c.getContext('2d');
+					ctx.fillStyle = '#fff';
+					ctx.fillRect(0, 0, c.width, c.height);
+					ctx.drawImage(img, 0, 0);
+					URL.revokeObjectURL(url);
+					var link = document.createElement('a');
+					link.download = 'ipam_visual_' + subnetCidr.replace(/\//g, '_') + '.png';
+					link.href = c.toDataURL('image/png');
+					link.click();
+				};
+				img.src = url;
+			}
+		});
+
+		/* ========== View switching ========== */
+
+		$('#table_view').click(function() {
+			document.location = 'cereus_ipam_addresses.php?subnet_id=' + subnetId;
+		});
+
+		$('#btn_tilemap').click(function() {
+			if (currentView === 'tilemap') return;
+			currentView = 'tilemap';
+			$('#btn_tilemap').addClass('ui-button-active');
+			$('#btn_hilbert').removeClass('ui-button-active');
+			refreshView();
+		});
+
+		$('#btn_hilbert').click(function() {
+			if (!hasHilbert || currentView === 'hilbert') return;
+			currentView = 'hilbert';
+			$('#btn_hilbert').addClass('ui-button-active');
+			$('#btn_tilemap').removeClass('ui-button-active');
+			refreshView();
+		});
+
+		$('#btn_back_overview').click(function() {
+			drilledBlock = null;
+			$loading.show();
+			loadOverviewData(function(data) {
+				if (currentView === 'hilbert' && hasHilbert) {
+					/* Hilbert overview loads full dataset */
+					renderHilbertOverview(data);
+				} else {
+					renderTileOverview(data);
+				}
+			});
+		});
+
+		function renderHilbertOverview(data) {
+			if (isLarge) {
+				/* For /16+: load all addresses progressively for Hilbert */
+				$container.html('<div style="text-align:center;padding:20px;color:#999;"><i class="fa fa-spinner fa-spin"></i> <?php print __esc('Loading full dataset for Hilbert view...', 'cereus_ipam'); ?></div>');
+				$.ajax({
+					url: 'cereus_ipam_addresses.php',
+					data: { action: 'visual_data', subnet_id: subnetId, full: 1 },
+					dataType: 'json',
+					success: function(fullData) {
+						renderHilbert(fullData.addresses || [], null);
+					}
+				});
+			} else {
+				renderHilbert(data.addresses || [], null);
+			}
+		}
+
+		function refreshView() {
+			$loading.show();
+			$container.empty();
+
+			if (drilledBlock) {
+				drillIntoBlock(drilledBlock);
+				return;
+			}
+
+			loadOverviewData(function(data) {
+				if (currentView === 'hilbert' && hasHilbert) {
+					renderHilbertOverview(data);
+				} else if (isLarge) {
+					renderTileOverview(data);
+				} else {
+					renderIpGrid(data.addresses || [], null);
+				}
+			});
+		}
+
+		/* ========== Initial load ========== */
+		refreshView();
+	});
+	</script>
+	<?php
+}
+
+/* ========== AJAX: Visual map data (overview) ========== */
+
+function cereus_ipam_address_visual_data() {
+	$subnet_id = (int) get_nfilter_request_var('subnet_id');
+	$full = (int) get_nfilter_request_var('full');
+
+	header('Content-Type: application/json');
+
+	if (!$subnet_id) {
+		print json_encode(array('error' => 'Invalid subnet'));
+		exit;
+	}
+
+	$subnet = db_fetch_row_prepared("SELECT * FROM plugin_cereus_ipam_subnets WHERE id = ?", array($subnet_id));
+	if (!cacti_sizeof($subnet)) {
+		print json_encode(array('error' => 'Subnet not found'));
+		exit;
+	}
+
+	$mask = (int) $subnet['mask'];
+	$is_large = ($mask < 22);
+
+	$result = array(
+		'subnet'  => $subnet['subnet'] . '/' . $mask,
+		'mask'    => $mask,
+	);
+
+	if ($is_large && !$full) {
+		/* Return per-/24 summary blocks for overview */
+		$addresses = db_fetch_assoc_prepared(
+			"SELECT ip, state FROM plugin_cereus_ipam_addresses WHERE subnet_id = ?",
+			array($subnet_id)
+		);
+
+		$block_counts = array();
+		if (cacti_sizeof($addresses)) {
+			foreach ($addresses as $a) {
+				$octets = explode('.', $a['ip']);
+				$bk = $octets[0] . '.' . $octets[1] . '.' . $octets[2] . '.0';
+				if (!isset($block_counts[$bk])) {
+					$block_counts[$bk] = array('used' => 0, 'active' => 0, 'reserved' => 0, 'dhcp' => 0, 'offline' => 0);
+				}
+				$block_counts[$bk]['used']++;
+				$st = $a['state'];
+				if (isset($block_counts[$bk][$st])) {
+					$block_counts[$bk][$st]++;
+				}
+			}
+		}
+
+		/* Build ordered /24 block list */
+		$range = cereus_ipam_cidr_to_range($subnet['subnet'], $mask);
+		$start = cereus_ipam_ip_to_gmp($range['first']);
+		$end   = cereus_ipam_ip_to_gmp($range['last']);
+		$step  = gmp_init(256);
+
+		$summary = array();
+		$current = $start;
+		while (gmp_cmp($current, $end) <= 0) {
+			$bip = cereus_ipam_gmp_to_ip($current, 4);
+			$c = $block_counts[$bip] ?? array('used' => 0, 'active' => 0, 'reserved' => 0, 'dhcp' => 0, 'offline' => 0);
+			$summary[] = array(
+				'prefix'   => $bip,
+				'used'     => $c['used'],
+				'active'   => $c['active'],
+				'reserved' => $c['reserved'],
+				'dhcp'     => $c['dhcp'],
+				'offline'  => $c['offline'],
+				'pct'      => round(($c['used'] / 256) * 100, 1),
+			);
+			$current = gmp_add($current, $step);
+		}
+
+		$result['summary_24'] = $summary;
+	} else {
+		/* Return all addresses for the entire subnet */
+		$result['addresses'] = cereus_ipam_visual_build_address_list($subnet_id, $subnet);
+	}
+
+	print json_encode($result, JSON_HEX_TAG | JSON_HEX_AMP);
+	exit;
+}
+
+/* ========== AJAX: Visual map data (single /24 chunk) ========== */
+
+function cereus_ipam_address_visual_data_chunk() {
+	$subnet_id = (int) get_nfilter_request_var('subnet_id');
+	$block = trim(get_nfilter_request_var('block'));
+
+	header('Content-Type: application/json');
+
+	if (!$subnet_id || !filter_var($block, FILTER_VALIDATE_IP)) {
+		print json_encode(array('error' => 'Invalid parameters'));
+		exit;
+	}
+
+	$subnet = db_fetch_row_prepared("SELECT * FROM plugin_cereus_ipam_subnets WHERE id = ?", array($subnet_id));
+	if (!cacti_sizeof($subnet)) {
+		print json_encode(array('error' => 'Subnet not found'));
+		exit;
+	}
+
+	/* Build full /24 IP list for this block */
+	$octets = explode('.', $block);
+	$base = $octets[0] . '.' . $octets[1] . '.' . $octets[2];
+
+	$addresses_raw = db_fetch_assoc_prepared(
+		"SELECT ip, hostname, mac_address, owner, state, id
+		 FROM plugin_cereus_ipam_addresses
+		 WHERE subnet_id = ? AND ip LIKE ?",
+		array($subnet_id, $base . '.%')
+	);
+
+	$addr_map = array();
+	if (cacti_sizeof($addresses_raw)) {
+		foreach ($addresses_raw as $a) {
+			$addr_map[$a['ip']] = $a;
+		}
+	}
+
+	/* Check for conflicts in this block */
+	$conflicts = array();
+	$conflict_rows = db_fetch_assoc_prepared(
+		"SELECT ip FROM plugin_cereus_ipam_scan_results
+		 WHERE subnet_id = ? AND ip LIKE ? AND is_alive = 1
+		 AND ip NOT IN (SELECT ip FROM plugin_cereus_ipam_addresses WHERE subnet_id = ? AND state != 'available')",
+		array($subnet_id, $base . '.%', $subnet_id)
+	);
+	if (cacti_sizeof($conflict_rows)) {
+		foreach ($conflict_rows as $cr) {
+			$conflicts[$cr['ip']] = true;
+		}
+	}
+
+	$list = array();
+	for ($i = 0; $i < 256; $i++) {
+		$ip = $base . '.' . $i;
+		if (isset($addr_map[$ip])) {
+			$a = $addr_map[$ip];
+			$state = isset($conflicts[$ip]) ? 'conflict' : $a['state'];
+			$list[] = array(
+				'ip'       => $ip,
+				'state'    => $state,
+				'hostname' => $a['hostname'] ?? '',
+				'mac'      => $a['mac_address'] ?? '',
+				'owner'    => $a['owner'] ?? '',
+				'id'       => (int) $a['id'],
+			);
+		} else {
+			$state = isset($conflicts[$ip]) ? 'conflict' : 'available';
+			$list[] = array(
+				'ip'    => $ip,
+				'state' => $state,
+				'hostname' => '',
+				'mac'   => '',
+				'owner' => '',
+				'id'    => 0,
+			);
+		}
+	}
+
+	print json_encode(array('addresses' => $list, 'block' => $block), JSON_HEX_TAG | JSON_HEX_AMP);
+	exit;
 }
 
 /**
- * Render summary blocks per /24 sub-block for subnets larger than /22.
+ * Build full address list JSON for a subnet.
+ * Used by visual_data endpoint for /22 and smaller subnets.
  */
-function cereus_ipam_visual_grid_summary($subnet, $subnet_id) {
-	$mask  = (int) $subnet['mask'];
+function cereus_ipam_visual_build_address_list($subnet_id, $subnet) {
+	$mask = (int) $subnet['mask'];
 	$range = cereus_ipam_cidr_to_range($subnet['subnet'], $mask);
 	$start = cereus_ipam_ip_to_gmp($range['first']);
 	$end   = cereus_ipam_ip_to_gmp($range['last']);
 
-	/* Count addresses per /24 sub-block */
-	$block_counts = array();
-	$block_totals = array();
-
-	$addresses = db_fetch_assoc_prepared(
-		"SELECT ip, state FROM plugin_cereus_ipam_addresses WHERE subnet_id = ?",
+	$addresses_raw = db_fetch_assoc_prepared(
+		"SELECT ip, hostname, mac_address, owner, state, id
+		 FROM plugin_cereus_ipam_addresses WHERE subnet_id = ?",
 		array($subnet_id)
 	);
 
-	if (cacti_sizeof($addresses)) foreach ($addresses as $a) {
-		$octets = explode('.', $a['ip']);
-		$block_key = $octets[0] . '.' . $octets[1] . '.' . $octets[2] . '.0';
-		if (!isset($block_counts[$block_key])) {
-			$block_counts[$block_key] = array('total' => 0, 'active' => 0, 'reserved' => 0, 'dhcp' => 0, 'offline' => 0, 'available' => 0);
-		}
-		$block_counts[$block_key]['total']++;
-		if (isset($block_counts[$block_key][$a['state']])) {
-			$block_counts[$block_key][$a['state']]++;
+	$addr_map = array();
+	if (cacti_sizeof($addresses_raw)) {
+		foreach ($addresses_raw as $a) {
+			$addr_map[$a['ip']] = $a;
 		}
 	}
 
-	/* Iterate through /24 sub-blocks */
+	$list = array();
 	$current = $start;
-	$block_step = gmp_init(256);
-	$blocks = array();
-
 	while (gmp_cmp($current, $end) <= 0) {
-		$block_ip = cereus_ipam_gmp_to_ip($current, 4);
-		$counts = $block_counts[$block_ip] ?? array('total' => 0, 'active' => 0, 'reserved' => 0, 'dhcp' => 0, 'offline' => 0, 'available' => 0);
-		$pct = ($counts['total'] > 0) ? round(($counts['total'] / 254) * 100, 1) : 0;
-		$blocks[] = array(
-			'ip'     => $block_ip,
-			'cidr'   => $block_ip . '/24',
-			'counts' => $counts,
-			'pct'    => $pct,
-		);
-		$current = gmp_add($current, $block_step);
+		$ip = cereus_ipam_gmp_to_ip($current, 4);
+		if (isset($addr_map[$ip])) {
+			$a = $addr_map[$ip];
+			$list[] = array(
+				'ip'       => $ip,
+				'state'    => $a['state'],
+				'hostname' => $a['hostname'] ?? '',
+				'mac'      => $a['mac_address'] ?? '',
+				'owner'    => $a['owner'] ?? '',
+				'id'       => (int) $a['id'],
+			);
+		} else {
+			$list[] = array(
+				'ip'    => $ip,
+				'state' => 'available',
+				'hostname' => '',
+				'mac'   => '',
+				'owner' => '',
+				'id'    => 0,
+			);
+		}
+		$current = gmp_add($current, 1);
 	}
 
-	html_start_box(__('/24 Sub-Block Summary', 'cereus_ipam'), '100%', '', '3', 'center', '');
-
-	$display_text = array(
-		array('display' => __('Sub-Block', 'cereus_ipam'), 'align' => 'left'),
-		array('display' => __('Used', 'cereus_ipam'),      'align' => 'center'),
-		array('display' => __('Utilization', 'cereus_ipam'), 'align' => 'left'),
-		array('display' => __('Active', 'cereus_ipam'),    'align' => 'center'),
-		array('display' => __('Reserved', 'cereus_ipam'),  'align' => 'center'),
-		array('display' => __('DHCP', 'cereus_ipam'),      'align' => 'center'),
-		array('display' => __('Offline', 'cereus_ipam'),   'align' => 'center'),
-	);
-	html_header($display_text);
-
-	foreach ($blocks as $b) {
-		form_alternate_row();
-		print '<td>' . html_escape($b['cidr']) . '</td>';
-		print '<td class="center">' . $b['counts']['total'] . ' / 254</td>';
-		print '<td>' . cereus_ipam_utilization_bar($b['pct']) . '</td>';
-		print '<td class="center" style="color:#4CAF50;">' . $b['counts']['active'] . '</td>';
-		print '<td class="center" style="color:#2196F3;">' . $b['counts']['reserved'] . '</td>';
-		print '<td class="center" style="color:#9C27B0;">' . $b['counts']['dhcp'] . '</td>';
-		print '<td class="center" style="color:#F44336;">' . $b['counts']['offline'] . '</td>';
-		form_end_row();
-	}
-
-	html_end_box();
+	return $list;
 }
 
 /* ==================== Inline Ping Check (AJAX) ==================== */

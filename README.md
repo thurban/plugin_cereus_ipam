@@ -24,6 +24,7 @@ A ground-up rewrite of the legacy nmidPhpip plugin, built with modern security p
 ### Professional
 - Unlimited subnets and import rows
 - Full IPv6 support (dual-stack, GMP-based math)
+- **Visual Network Map** — interactive d3.js tile map with /24 block overview, per-IP color grid, and drill-down
 - VLAN management with subnet-to-VLAN mapping
 - VRF support for overlapping address spaces
 - Network scanning: fping (poller), native ICMP ping, and parallel TCP probing (web) — supports /16 and larger subnets with chunked processing
@@ -44,6 +45,7 @@ A ground-up rewrite of the legacy nmidPhpip plugin, built with modern security p
 - Unlimited audit trail retention
 
 ### Enterprise
+- **Hilbert Curve Heatmap** — space-filling curve that renders an entire /16 (65K IPs) in one view
 - Webhook callbacks (JSON POST on IPAM change events)
 - REST API endpoints (via Cereus REST API plugin)
 - Maintenance windows with scan/alert suppression

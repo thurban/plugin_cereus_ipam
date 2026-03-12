@@ -1180,9 +1180,14 @@ function cereus_ipam_list() {
 					$row['id']
 				);
 
-				/* Clickable utilization bar → links to visual map */
-				$util_bar = '<a href="cereus_ipam_addresses.php?action=visual&subnet_id=' . $row['id'] . '" title="' . __esc('Open Visual Map', 'cereus_ipam') . '">'
-					. cereus_ipam_utilization_bar($util['pct']) . '</a>';
+				/* Clickable utilization bar → links to visual map (Professional+) or address list */
+				if (cereus_ipam_license_has_visual_map()) {
+					$util_bar = '<a href="cereus_ipam_addresses.php?action=visual&subnet_id=' . $row['id'] . '" title="' . __esc('Open Visual Map', 'cereus_ipam') . '">'
+						. cereus_ipam_utilization_bar($util['pct']) . '</a>';
+				} else {
+					$util_bar = '<a href="cereus_ipam_addresses.php?subnet_id=' . $row['id'] . '">'
+						. cereus_ipam_utilization_bar($util['pct']) . '</a>';
+				}
 				form_selectable_cell($util_bar, $row['id']);
 
 				/* Threshold status indicator */
@@ -1204,7 +1209,9 @@ function cereus_ipam_list() {
 
 				/* Quick-action buttons */
 				$actions_html = '<a href="cereus_ipam_addresses.php?subnet_id=' . $row['id'] . '" title="' . __esc('View Addresses', 'cereus_ipam') . '"><i class="fa fa-list"></i></a>';
-				$actions_html .= '&nbsp;&nbsp;<a href="cereus_ipam_addresses.php?action=visual&subnet_id=' . $row['id'] . '" title="' . __esc('Visual Map', 'cereus_ipam') . '"><i class="fa fa-th"></i></a>';
+				if (cereus_ipam_license_has_visual_map()) {
+					$actions_html .= '&nbsp;&nbsp;<a href="cereus_ipam_addresses.php?action=visual&subnet_id=' . $row['id'] . '" title="' . __esc('Visual Map', 'cereus_ipam') . '"><i class="fa fa-th"></i></a>';
+				}
 				if (cereus_ipam_license_has_scanning()) {
 					$actions_html .= '&nbsp;&nbsp;<a href="cereus_ipam_scan.php?subnet_id=' . $row['id'] . '" title="' . __esc('Scan Subnet', 'cereus_ipam') . '"><i class="fa fa-search"></i></a>';
 				}

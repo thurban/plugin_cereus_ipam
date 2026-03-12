@@ -250,3 +250,17 @@ function cereus_ipam_license_has_subnet_nesting() {
 function cereus_ipam_license_has_bulk_fill() {
 	return cereus_ipam_license_at_least('professional');
 }
+
+/**
+ * Visual network map (tile map) requires Professional+.
+ */
+function cereus_ipam_license_has_visual_map() {
+	return cereus_ipam_license_at_least('professional');
+}
+
+/**
+ * Hilbert curve heatmap requires Enterprise.
+ */
+function cereus_ipam_license_has_hilbert_map() {
+	return cereus_ipam_license_at_least('enterprise');
+}

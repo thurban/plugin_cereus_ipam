@@ -1,5 +1,8 @@
 No known issues.
 
+New in v1.4.0:
+- Visual Network Map (Tile Map + Hilbert Curve Heatmap) — see CHANGELOG.md
+
 Fixed in v1.3.0:
 - Large subnet (/16) scans no longer stop at first /24 on any platform (Linux/Apache, Windows/IIS, Nginx)
 - Native ping scanner no longer builds entire IP range into memory
