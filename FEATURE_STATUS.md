@@ -1,4 +1,4 @@
-# Cereus IPAM — Feature Status (v1.2.0)
+# Cereus IPAM — Feature Status (v1.3.0)
 
 ## Community Tier (Free)
 

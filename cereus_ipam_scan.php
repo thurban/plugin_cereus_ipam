@@ -67,6 +67,11 @@ function cereus_ipam_run_scan_action() {
 	/* Remove PHP execution time limit for large subnet scans (e.g. /16) */
 	set_time_limit(0);
 
+	/* Keep running even if the HTTP connection is dropped (Apache Timeout,
+	 * browser close, proxy timeout). Scan results are written to the DB
+	 * progressively, so the progress poller can still track completion. */
+	ignore_user_abort(true);
+
 	/* Clear old scan results for this subnet */
 	db_execute_prepared("DELETE FROM plugin_cereus_ipam_scan_results WHERE subnet_id = ?", array($subnet_id));
 
@@ -101,6 +106,10 @@ function cereus_ipam_run_arp_scan_action() {
 		print json_encode(array('success' => false, 'error' => __('Invalid subnet.', 'cereus_ipam')));
 		exit;
 	}
+
+	/* Keep running even if the HTTP connection is dropped */
+	set_time_limit(0);
+	ignore_user_abort(true);
 
 	/* Release session lock */
 	session_write_close();
@@ -305,14 +314,37 @@ function cereus_ipam_scan_page() {
 							}
 						},
 						error: function(xhr, status) {
-							stopProgress();
-							var msg = (status === 'timeout') ? '<?php print __esc('Scan timed out. Check results below.', 'cereus_ipam'); ?>' : '<?php print __esc('Scan request failed.', 'cereus_ipam'); ?>';
-							$('#scan_status').html('<span style="color:#F44336;">' + msg + '</span>');
-							loadPageNoHeader('cereus_ipam_scan.php?header=false&subnet_id=' + sid);
+							/* The HTTP connection may drop (Apache Timeout) but the
+							   scan continues server-side (ignore_user_abort). Keep
+							   polling for progress until the scan finishes. */
+							$('#scan_status').html('<i><?php print __esc('Scan running in background...', 'cereus_ipam'); ?></i>');
+							if (!progressTimer) {
+								startProgress(sid);
+							}
+							/* Poll until is_running goes false */
+							var checkDone = setInterval(function() {
+								$.ajax({
+									url: 'cereus_ipam_scan.php',
+									data: { action: 'scan_progress', subnet_id: sid },
+									dataType: 'json',
+									timeout: 5000,
+									success: function(data) {
+										if (!data.is_running) {
+											clearInterval(checkDone);
+											stopProgress();
+											$('#scan_status').html('<span style="color:#4CAF50;font-weight:bold;"><?php print __esc('Scan complete:', 'cereus_ipam'); ?> ' + data.alive + ' <?php print __esc('hosts alive', 'cereus_ipam'); ?></span>');
+											btn.prop('disabled', false).val('<?php print __esc('Ping Scan', 'cereus_ipam'); ?>');
+											loadPageNoHeader('cereus_ipam_scan.php?header=false&subnet_id=' + sid);
+										}
+									}
+								});
+							}, 3000);
 						},
 						complete: function() {
-							stopProgress();
-							btn.prop('disabled', false).val('<?php print __esc('Scan Now', 'cereus_ipam'); ?>');
+							/* Only re-enable button if we're NOT in background-poll mode */
+							if (!progressTimer) {
+								btn.prop('disabled', false).val('<?php print __esc('Ping Scan', 'cereus_ipam'); ?>');
+							}
 						}
 					});
 				});

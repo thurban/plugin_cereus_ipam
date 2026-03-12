@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.3.0] - 2026-03-12
+
+### Fixed
+- Large subnet scanning (/16 and above) now completes reliably on all platforms
+  - Native ICMP ping scanner rewritten with /24-sized chunking (was building all 65,536 IPs into memory at once)
+  - fping scanner split into /24 chunks for subnets larger than /24 with progressive result storage
+  - Scan results written to database after each chunk, not held in memory until completion
+- Scans no longer silently abort when HTTP connection drops
+  - Added `ignore_user_abort(true)` to both ping and ARP scan entry points
+  - Works across Apache (Timeout), Nginx (proxy_read_timeout), and IIS FastCGI (ActivityTimeout)
+  - ARP scan entry point now also sets `set_time_limit(0)` for consistency
+
+### Changed
+- Scan UI: HTTP timeout no longer shows a failure message — instead displays "Scan running in background" and continues polling until the scan completes
+- Progress heartbeat frequency increased (every 4 chunks of 256 IPs) for more responsive progress display on large subnets
+- Native ping scanner memory usage reduced from O(subnet_size) to O(256) for large subnets
+
 ## [1.2.0] - 2026-03-12
 
 ### Fixed

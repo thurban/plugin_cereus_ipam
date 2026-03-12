@@ -26,7 +26,7 @@ A ground-up rewrite of the legacy nmidPhpip plugin, built with modern security p
 - Full IPv6 support (dual-stack, GMP-based math)
 - VLAN management with subnet-to-VLAN mapping
 - VRF support for overlapping address spaces
-- Network scanning: fping (poller), native ICMP ping, and parallel TCP probing (web)
+- Network scanning: fping (poller), native ICMP ping, and parallel TCP probing (web) — supports /16 and larger subnets with chunked processing
 - ARP table scanning via SNMP discovery
 - DNS integration (forward/reverse lookups)
 - Custom fields (text, textarea, dropdown, checkbox, date, URL)

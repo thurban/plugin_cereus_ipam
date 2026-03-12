@@ -1,3 +1,10 @@
-No known issues. Fixed in v1.2.0:
+No known issues.
+
+Fixed in v1.3.0:
+- Large subnet (/16) scans no longer stop at first /24 on any platform (Linux/Apache, Windows/IIS, Nginx)
+- Native ping scanner no longer builds entire IP range into memory
+- HTTP connection drops (Apache Timeout, IIS FastCGI ActivityTimeout) no longer abort running scans
+
+Fixed in v1.2.0:
 - ARP scan fatal error (cacti_snmp_walk undefined) resolved
 - Windows scan now uses native ICMP ping instead of TCP fallback
