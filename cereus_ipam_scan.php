@@ -64,6 +64,9 @@ function cereus_ipam_run_scan_action() {
 	/* Mark scan as in-progress */
 	set_config_option('cereus_ipam_scan_active_' . $subnet_id, time());
 
+	/* Remove PHP execution time limit for large subnet scans (e.g. /16) */
+	set_time_limit(0);
+
 	/* Clear old scan results for this subnet */
 	db_execute_prepared("DELETE FROM plugin_cereus_ipam_scan_results WHERE subnet_id = ?", array($subnet_id));
 
@@ -126,16 +129,11 @@ function cereus_ipam_scan_progress() {
 	$version = cereus_ipam_ip_version($subnet['subnet']);
 	$total = (int) cereus_ipam_subnet_size((int) $subnet['mask'], $version);
 
-	/* Cap display total at 256 for large subnets (PHP fallback limit) */
-	if ($total > 256) {
-		$total = 256;
-	}
-
 	$scanned = (int) db_fetch_cell_prepared("SELECT COUNT(*) FROM plugin_cereus_ipam_scan_results WHERE subnet_id = ?", array($subnet_id));
 	$alive   = (int) db_fetch_cell_prepared("SELECT COUNT(*) FROM plugin_cereus_ipam_scan_results WHERE subnet_id = ? AND is_alive = 1", array($subnet_id));
 
 	$active = read_config_option('cereus_ipam_scan_active_' . $subnet_id);
-	$is_running = (!empty($active) && (time() - (int) $active) < 600);
+	$is_running = (!empty($active) && (time() - (int) $active) < 1800);
 
 	$pct = ($total > 0) ? min(100, round(($scanned / $total) * 100)) : 0;
 
@@ -296,7 +294,7 @@ function cereus_ipam_scan_page() {
 						type: 'POST',
 						data: { action: 'run_scan', subnet_id: sid, __csrf_magic: csrfMagicToken },
 						dataType: 'json',
-						timeout: 600000,
+						timeout: 1800000,
 						success: function(data) {
 							stopProgress();
 							if (data.success) {

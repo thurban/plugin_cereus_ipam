@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.1.0] - 2026-03-12
+
+### Fixed
+- Network scanning now supports large subnets (e.g. /16) — previously only /24 worked
+  - TCP scanner processes subnets in /24-sized chunks instead of truncating at 1024 IPs
+  - Scan progress reports actual subnet size instead of capping at 256
+  - PHP execution time limit removed during scans to prevent timeout on large subnets
+  - AJAX and progress-poll timeouts extended to 30 minutes for large scans
+  - Scanner sends periodic heartbeat during chunked scans for accurate progress display
+- False positive conflict alerts eliminated
+  - MAC address comparison now normalizes format (strips separators) before comparing
+  - Stale detection skips addresses that were never confirmed alive (no last_seen)
+  - Rogue detection excludes known Cacti device IPs (device sync handles those)
+  - Conflict alert emails now filtered by user-selected conflict types
+- ARP scan (SNMP) now finds devices reliably
+  - Matches devices with status UP or Recovering (was UP only)
+  - Requires SNMP version > 0 to skip non-SNMP devices
+  - Resolves gateway DNS names to IP for proper device matching
+  - Falls back to matching by both raw hostname and resolved IP
+  - Provides detailed error messages with actionable troubleshooting hints
+
+### Added
+- New setting "Alert on Conflict Types" — multi-select to choose which conflict types (MAC, Rogue, Stale) trigger email alerts (default: MAC Conflict only)
+
 ## [1.0.1] - 2026-03-12
 
 ### Added

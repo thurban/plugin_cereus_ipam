@@ -1,0 +1,4 @@
+No known issues. Fixed in v1.1.0:
+- Scanning a /16 subnet now works (chunked scanning)
+- False conflict alert emails eliminated (MAC normalization, type filtering)
+- ARP scan now works (improved device/gateway matching)

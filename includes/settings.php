@@ -162,6 +162,17 @@ function cereus_ipam_config_settings() {
 			'method'        => 'checkbox',
 			'default'       => '',
 		),
+		'cereus_ipam_conflict_alert_types' => array(
+			'friendly_name' => __('Alert on Conflict Types', 'cereus_ipam'),
+			'description'   => __('Which conflict types should trigger email alerts. MAC Conflict = same IP with different MAC; Rogue = IP alive but not in IPAM; Stale = IP in IPAM but not responding.', 'cereus_ipam'),
+			'method'        => 'drop_multi',
+			'default'       => 'mac_conflict',
+			'array'         => array(
+				'mac_conflict' => __('MAC Conflict', 'cereus_ipam'),
+				'rogue'        => __('Rogue/Unmanaged', 'cereus_ipam'),
+				'stale'        => __('Stale', 'cereus_ipam'),
+			),
+		),
 		'cereus_ipam_conflict_alert_emails' => array(
 			'friendly_name' => __('Conflict Alert Recipients', 'cereus_ipam'),
 			'description'   => __('Comma-separated email addresses for conflict alerts.', 'cereus_ipam'),

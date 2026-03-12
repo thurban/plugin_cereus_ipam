@@ -8,13 +8,26 @@
 */
 
 /**
+ * Normalize a MAC address to uppercase hex-only (no separators).
+ * Handles formats: AA:BB:CC:DD:EE:FF, AA-BB-CC-DD-EE-FF, AABB.CCDD.EEFF
+ *
+ * @param string $mac
+ * @return string  Normalized MAC (e.g. 'AABBCCDDEEFF') or empty string
+ */
+function cereus_ipam_normalize_mac($mac) {
+	$mac = strtoupper(trim($mac));
+	$mac = preg_replace('/[^A-F0-9]/', '', $mac);
+	return (strlen($mac) === 12) ? $mac : '';
+}
+
+/**
  * Run conflict detection for a subnet after a scan.
  * Compares scan results against IPAM address records.
  *
  * Detects three conflict types:
  *   mac_conflict — Same IP seen with different MAC than IPAM record
- *   rogue        — IP alive on network but not in IPAM
- *   stale        — IP in IPAM as active but not alive on scan
+ *   rogue        — IP alive on network but not in IPAM and not a known Cacti device
+ *   stale        — IP in IPAM as active, previously seen alive, but not alive on scan
  *
  * @param int $subnet_id Subnet ID
  * @return array Summary of detected conflicts
@@ -46,9 +59,9 @@ function cereus_ipam_detect_conflicts($subnet_id) {
 		}
 	}
 
-	/* Get all IPAM address records for this subnet */
+	/* Get all IPAM address records for this subnet (include last_seen for stale check) */
 	$ipam_addresses = db_fetch_assoc_prepared(
-		"SELECT id, ip, mac_address, state, hostname
+		"SELECT id, ip, mac_address, state, hostname, last_seen
 		FROM plugin_cereus_ipam_addresses
 		WHERE subnet_id = ?",
 		array($subnet_id)
@@ -59,20 +72,41 @@ function cereus_ipam_detect_conflicts($subnet_id) {
 		$ipam_by_ip[$addr['ip']] = $addr;
 	}
 
-	/* Detection 1: MAC conflicts — IP in IPAM with different MAC than scan */
+	/* Build a set of known Cacti device IPs for rogue exclusion */
+	$cacti_host_ips = array();
+	$hosts = db_fetch_assoc("SELECT hostname FROM host WHERE disabled = '' AND status IN (2,3)");
+	if (cacti_sizeof($hosts)) {
+		foreach ($hosts as $h) {
+			$hip = $h['hostname'];
+			if (!filter_var($hip, FILTER_VALIDATE_IP)) {
+				$hip = @gethostbyname($hip);
+			}
+			if (filter_var($hip, FILTER_VALIDATE_IP)) {
+				$cacti_host_ips[$hip] = true;
+			}
+		}
+	}
+
+	/* Detection 1: MAC conflicts — IP in IPAM with different MAC than scan.
+	 * Normalize both MACs to strip separator differences (colon vs dash vs dot). */
 	foreach ($scan_alive as $ip => $scan_mac) {
 		if (empty($scan_mac)) {
 			continue;
 		}
 
 		if (isset($ipam_by_ip[$ip]) && !empty($ipam_by_ip[$ip]['mac_address'])) {
-			$ipam_mac = strtoupper(trim($ipam_by_ip[$ip]['mac_address']));
-			$s_mac    = strtoupper(trim($scan_mac));
+			$ipam_norm = cereus_ipam_normalize_mac($ipam_by_ip[$ip]['mac_address']);
+			$scan_norm = cereus_ipam_normalize_mac($scan_mac);
 
-			if ($ipam_mac !== $s_mac) {
+			/* Skip if either MAC couldn't be normalized (invalid format) */
+			if (empty($ipam_norm) || empty($scan_norm)) {
+				continue;
+			}
+
+			if ($ipam_norm !== $scan_norm) {
 				$details = json_encode(array(
-					'ipam_mac'    => $ipam_mac,
-					'scan_mac'    => $s_mac,
+					'ipam_mac'    => strtoupper(trim($ipam_by_ip[$ip]['mac_address'])),
+					'scan_mac'    => strtoupper(trim($scan_mac)),
 					'ipam_host'   => $ipam_by_ip[$ip]['hostname'] ?? '',
 					'ipam_state'  => $ipam_by_ip[$ip]['state'],
 				));
@@ -81,9 +115,15 @@ function cereus_ipam_detect_conflicts($subnet_id) {
 		}
 	}
 
-	/* Detection 2: Rogue IPs — alive on scan but not in IPAM */
+	/* Detection 2: Rogue IPs — alive on scan but not in IPAM.
+	 * Skip IPs that are known Cacti devices (device sync will add them shortly). */
 	foreach ($scan_alive as $ip => $scan_mac) {
 		if (!isset($ipam_by_ip[$ip])) {
+			/* Don't flag known Cacti devices as rogue — device sync handles them */
+			if (isset($cacti_host_ips[$ip])) {
+				continue;
+			}
+
 			$hostname = @gethostbyaddr($ip);
 			$details = json_encode(array(
 				'scan_mac'  => $scan_mac,
@@ -93,13 +133,27 @@ function cereus_ipam_detect_conflicts($subnet_id) {
 		}
 	}
 
-	/* Detection 3: Stale IPs — in IPAM as active but not alive on scan */
+	/* Detection 3: Stale IPs — in IPAM as active but not alive on scan.
+	 * Only flag if the IP was previously seen alive (has last_seen).
+	 * Skip addresses in dhcp/reserved/available/offline states. */
 	foreach ($ipam_by_ip as $ip => $addr) {
-		if ($addr['state'] === 'active' && !isset($scan_alive[$ip])) {
+		if ($addr['state'] !== 'active') {
+			continue;
+		}
+
+		if (!isset($scan_alive[$ip])) {
+			/* Only flag as stale if we've actually seen this IP alive before.
+			 * If last_seen is NULL, the address was manually entered and never
+			 * confirmed via scan — not a real stale situation. */
+			if (empty($addr['last_seen'])) {
+				continue;
+			}
+
 			$details = json_encode(array(
 				'ipam_mac'   => $addr['mac_address'] ?? '',
 				'ipam_host'  => $addr['hostname'] ?? '',
 				'last_state' => $addr['state'],
+				'last_seen'  => $addr['last_seen'],
 			));
 			$new_conflicts[] = cereus_ipam_record_conflict($subnet_id, $ip, 'stale', $details, $now);
 		}
@@ -261,7 +315,7 @@ function cereus_ipam_conflict_type_info($type) {
 
 /**
  * Send email alert for newly detected conflicts.
- * Uses existing threshold email infrastructure.
+ * Only sends alerts for conflict types the user has selected in settings.
  *
  * @param array $new_conflicts  Array of new conflict records
  * @param int   $subnet_id
@@ -270,6 +324,26 @@ function cereus_ipam_conflict_alert($new_conflicts, $subnet_id) {
 	if (!cacti_sizeof($new_conflicts)) {
 		return;
 	}
+
+	/* Filter by selected alert types */
+	$alert_types_raw = read_config_option('cereus_ipam_conflict_alert_types');
+	if (empty($alert_types_raw)) {
+		$alert_types = array('mac_conflict');  /* default: only MAC conflicts */
+	} else {
+		$alert_types = explode(',', $alert_types_raw);
+	}
+
+	$filtered = array();
+	foreach ($new_conflicts as $c) {
+		if ($c !== false && in_array($c['type'], $alert_types)) {
+			$filtered[] = $c;
+		}
+	}
+
+	if (!cacti_sizeof($filtered)) {
+		return;
+	}
+	$new_conflicts = $filtered;
 
 	/* Get email recipients */
 	$manual_emails  = read_config_option('cereus_ipam_conflict_alert_emails');

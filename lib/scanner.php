@@ -300,22 +300,12 @@ function cereus_ipam_scan_tcp_parallel($subnet_id, $subnet) {
 	$start = cereus_ipam_ip_to_gmp($range['first']);
 	$end   = cereus_ipam_ip_to_gmp($range['last']);
 
-	/* Safety limit: max 1024 IPs (/22) */
-	$max_hosts = 1024;
-	$size = gmp_sub($end, $start);
+	$total_size = gmp_intval(gmp_sub($end, $start)) + 1;
 
-	if (gmp_cmp($size, $max_hosts) > 0) {
-		$end = gmp_add($start, $max_hosts);
-	}
-
-	/* Build IP list */
-	$all_ips = array();
-	$current = $start;
-
-	while (gmp_cmp($current, $end) <= 0) {
-		$all_ips[] = cereus_ipam_gmp_to_ip($current, $version);
-		$current = gmp_add($current, 1);
-	}
+	/* Chunk size: process at most 256 IPs (/24) per chunk to keep
+	 * memory and execution time bounded.  Large subnets (/16 = 65536 IPs)
+	 * are scanned chunk by chunk instead of being silently truncated. */
+	$chunk_size = 256;
 
 	$ports = cereus_ipam_scan_get_tcp_ports();
 	$timeout_ms = cereus_ipam_scan_get_timeout();
@@ -325,52 +315,79 @@ function cereus_ipam_scan_tcp_parallel($subnet_id, $subnet) {
 	set_error_handler(function () { return true; });
 
 	$alive_set = array(); /* ip => true */
+	$now = date('Y-m-d H:i:s');
 
-	/* For each port, scan remaining (not-yet-found-alive) IPs */
-	foreach ($ports as $port) {
-		$remaining = array_diff($all_ips, array_keys($alive_set));
+	/* Process the subnet in /24-sized chunks */
+	$chunk_start = $start;
+	$chunk_count = 0;
 
-		if (empty($remaining)) {
-			break;
+	while (gmp_cmp($chunk_start, $end) <= 0) {
+		$chunk_end = gmp_add($chunk_start, $chunk_size - 1);
+
+		if (gmp_cmp($chunk_end, $end) > 0) {
+			$chunk_end = $end;
 		}
 
-		$remaining = array_values($remaining);
+		/* Heartbeat: refresh the scan-active timestamp every 10 chunks
+		 * so progress polling knows the scan is still alive. */
+		if (++$chunk_count % 10 === 0) {
+			set_config_option('cereus_ipam_scan_active_' . $subnet_id, time());
+		}
 
-		/* Process in batches */
-		for ($offset = 0; $offset < count($remaining); $offset += $batch_size) {
-			$batch = array_slice($remaining, $offset, $batch_size);
+		/* Build IP list for this chunk */
+		$chunk_ips = array();
+		$current = $chunk_start;
 
-			$batch_alive = cereus_ipam_tcp_connect_batch($batch, $port, $timeout_ms);
+		while (gmp_cmp($current, $chunk_end) <= 0) {
+			$chunk_ips[] = cereus_ipam_gmp_to_ip($current, $version);
+			$current = gmp_add($current, 1);
+		}
 
-			foreach ($batch_alive as $ip) {
-				$alive_set[$ip] = true;
+		/* For each port, scan remaining (not-yet-found-alive) IPs in this chunk */
+		foreach ($ports as $port) {
+			$remaining = array_diff($chunk_ips, array_keys($alive_set));
+
+			if (empty($remaining)) {
+				break;
+			}
+
+			$remaining = array_values($remaining);
+
+			for ($offset = 0; $offset < count($remaining); $offset += $batch_size) {
+				$batch = array_slice($remaining, $offset, $batch_size);
+				$batch_alive = cereus_ipam_tcp_connect_batch($batch, $port, $timeout_ms);
+
+				foreach ($batch_alive as $ip) {
+					$alive_set[$ip] = true;
+				}
 			}
 		}
+
+		/* Store results for this chunk immediately to avoid holding all IPs in memory */
+		foreach ($chunk_ips as $ip) {
+			$is_alive = isset($alive_set[$ip]) ? 1 : 0;
+
+			db_execute_prepared("INSERT INTO plugin_cereus_ipam_scan_results
+				(subnet_id, ip, is_alive, scan_type, scanned_at)
+				VALUES (?, ?, ?, 'ping', ?)",
+				array($subnet_id, $ip, $is_alive, $now));
+
+			if ($is_alive) {
+				$hostname = @gethostbyaddr($ip);
+
+				if ($hostname !== $ip && $hostname !== false) {
+					db_execute_prepared("UPDATE plugin_cereus_ipam_scan_results
+						SET hostname = ? WHERE subnet_id = ? AND ip = ? AND scanned_at = ?",
+						array($hostname, $subnet_id, $ip, $now));
+				}
+			}
+		}
+
+		/* Advance to next chunk */
+		$chunk_start = gmp_add($chunk_end, 1);
 	}
 
 	restore_error_handler();
-
-	/* Store results and resolve DNS */
-	$now = date('Y-m-d H:i:s');
-
-	foreach ($all_ips as $ip) {
-		$is_alive = isset($alive_set[$ip]) ? 1 : 0;
-
-		db_execute_prepared("INSERT INTO plugin_cereus_ipam_scan_results
-			(subnet_id, ip, is_alive, scan_type, scanned_at)
-			VALUES (?, ?, ?, 'ping', ?)",
-			array($subnet_id, $ip, $is_alive, $now));
-
-		if ($is_alive) {
-			$hostname = @gethostbyaddr($ip);
-
-			if ($hostname !== $ip && $hostname !== false) {
-				db_execute_prepared("UPDATE plugin_cereus_ipam_scan_results
-					SET hostname = ? WHERE subnet_id = ? AND ip = ? AND scanned_at = ?",
-					array($hostname, $subnet_id, $ip, $now));
-			}
-		}
-	}
 
 	/* Update subnet last_scanned */
 	db_execute_prepared("UPDATE plugin_cereus_ipam_subnets SET last_scanned = NOW() WHERE id = ?", array($subnet_id));
@@ -383,6 +400,7 @@ function cereus_ipam_scan_tcp_parallel($subnet_id, $subnet) {
 		'alive_count' => count($alive_set),
 		'alive_ips'   => array_keys($alive_set),
 		'subnet'      => $subnet['subnet'] . '/' . $subnet['mask'],
+		'total_ips'   => $total_size,
 		'method'      => 'tcp-parallel',
 	);
 }
@@ -665,13 +683,26 @@ function cereus_ipam_scan_arp($subnet_id) {
 
 	$version = cereus_ipam_ip_version($subnet['subnet']);
 
-	/* Find Cacti devices whose IPs fall within this subnet */
-	$hosts = db_fetch_assoc("SELECT id, hostname, snmp_community, snmp_version, snmp_username,
+	/* Find Cacti devices with SNMP that are UP or recovering */
+	$hosts = db_fetch_assoc("SELECT id, hostname, description, snmp_community, snmp_version, snmp_username,
 		snmp_password, snmp_auth_protocol, snmp_priv_passphrase, snmp_priv_protocol,
-		snmp_context, snmp_engine_id, snmp_port, snmp_timeout
-		FROM host WHERE disabled = '' AND status = 3");
+		snmp_context, snmp_engine_id, snmp_port, snmp_timeout, status
+		FROM host WHERE disabled = '' AND status IN (2,3) AND snmp_version > 0");
 
 	$gateway_hosts = array();
+	$skipped_reasons = array();
+
+	/* Resolve gateway IP once */
+	$gateway_ip = '';
+	if (!empty($subnet['gateway'])) {
+		$gateway_ip = $subnet['gateway'];
+		if (!cereus_ipam_validate_ip($gateway_ip)) {
+			$resolved = @gethostbyname($gateway_ip);
+			if (cereus_ipam_validate_ip($resolved)) {
+				$gateway_ip = $resolved;
+			}
+		}
+	}
 
 	foreach ($hosts as $host) {
 		$host_ip = $host['hostname'];
@@ -680,33 +711,63 @@ function cereus_ipam_scan_arp($subnet_id) {
 			$host_ip = @gethostbyname($host_ip);
 
 			if (!cereus_ipam_validate_ip($host_ip)) {
+				$skipped_reasons[] = $host['description'] . ' (' . $host['hostname'] . '): DNS resolution failed';
 				continue;
 			}
 		}
 
 		/* Include any device that could have ARP entries for this subnet:
-		   devices IN the subnet, or the gateway */
-		if (cereus_ipam_ip_in_subnet($host_ip, $subnet['subnet'], $subnet['mask'])
-			|| (!empty($subnet['gateway']) && $host_ip === $subnet['gateway'])) {
+		 * 1. Devices IN the subnet
+		 * 2. The configured gateway (matched by resolved IP, not just hostname string)
+		 * ARP tables on L3 devices contain entries for all directly-connected subnets,
+		 * so the gateway router is the primary source even if it's outside the subnet. */
+		if (cereus_ipam_ip_in_subnet($host_ip, $subnet['subnet'], $subnet['mask'])) {
+			$gateway_hosts[] = $host;
+		} elseif (!empty($gateway_ip) && $host_ip === $gateway_ip) {
 			$gateway_hosts[] = $host;
 		}
 	}
 
-	/* If no devices found, try to use the gateway device specifically */
+	/* If no devices found, try broader matching for the gateway:
+	 * 1. Match by hostname field = gateway value
+	 * 2. Match by hostname field = gateway IP
+	 * This covers cases where the gateway is entered as a DNS name but the
+	 * Cacti device uses the IP as hostname, or vice versa. */
 	if (!cacti_sizeof($gateway_hosts) && !empty($subnet['gateway'])) {
-		$gw_host = db_fetch_row_prepared("SELECT id, hostname, snmp_community, snmp_version, snmp_username,
-			snmp_password, snmp_auth_protocol, snmp_priv_passphrase, snmp_priv_protocol,
-			snmp_context, snmp_engine_id, snmp_port, snmp_timeout
-			FROM host WHERE hostname = ? AND disabled = '' AND status = 3",
-			array($subnet['gateway']));
+		$gw_search_values = array($subnet['gateway']);
+		if (!empty($gateway_ip) && $gateway_ip !== $subnet['gateway']) {
+			$gw_search_values[] = $gateway_ip;
+		}
 
-		if (cacti_sizeof($gw_host)) {
-			$gateway_hosts[] = $gw_host;
+		foreach ($gw_search_values as $gw_val) {
+			$gw_host = db_fetch_row_prepared("SELECT id, hostname, description, snmp_community, snmp_version, snmp_username,
+				snmp_password, snmp_auth_protocol, snmp_priv_passphrase, snmp_priv_protocol,
+				snmp_context, snmp_engine_id, snmp_port, snmp_timeout, status
+				FROM host WHERE hostname = ? AND disabled = '' AND status IN (2,3) AND snmp_version > 0",
+				array($gw_val));
+
+			if (cacti_sizeof($gw_host)) {
+				$gateway_hosts[] = $gw_host;
+				break;
+			}
 		}
 	}
 
 	if (!cacti_sizeof($gateway_hosts)) {
-		return array('success' => false, 'error' => __('No SNMP-capable devices found in subnet or as gateway.', 'cereus_ipam'));
+		$hint = '';
+		if (empty($subnet['gateway'])) {
+			$hint = __(' Set the subnet gateway to a Cacti-managed router/switch that has ARP entries for this subnet.', 'cereus_ipam');
+		} elseif (!empty($gateway_ip)) {
+			$hint = __(' Gateway %s is not a Cacti device with SNMP, or it is down. Add it to Cacti with SNMP credentials and ensure it is UP.', $subnet['gateway'], 'cereus_ipam');
+		}
+
+		$error = __('No SNMP-capable devices found in subnet or as gateway.', 'cereus_ipam') . $hint;
+
+		if (cacti_sizeof($skipped_reasons)) {
+			$error .= ' ' . __('Skipped devices:', 'cereus_ipam') . ' ' . implode('; ', array_slice($skipped_reasons, 0, 5));
+		}
+
+		return array('success' => false, 'error' => $error);
 	}
 
 	$discovered = array();
