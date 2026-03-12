@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.2.0] - 2026-03-12
+
+### Fixed
+- ARP scan fatal error: `Call to undefined function cacti_snmp_walk()` — Cacti's SNMP library is now loaded before ARP table walks
+
+### Added
+- Native ICMP ping scan method using the OS `ping` command
+  - Works on Windows (`ping -n 1 -w <timeout>`) and Linux (`ping -c 1 -W <timeout>`)
+  - IPv6 support via `ping -6` (Windows) and `ping6` (Linux)
+  - Parallel execution using `proc_open()` (batches of 20 concurrent pings)
+  - Latency extraction from ping output
+  - Available as explicit "Native Ping" setting or auto-selected on Windows when fping is unavailable
+- New scan method option in settings: "Native Ping (ICMP via OS ping command)"
+- Single-host ping now uses native ICMP on Windows for more accurate alive detection
+
+### Changed
+- Auto scan method detection now prefers native ICMP ping over TCP on Windows (devices without open TCP ports are no longer missed)
+- Scan method setting description updated to reflect the new ping option
+
 ## [1.1.0] - 2026-03-12
 
 ### Fixed

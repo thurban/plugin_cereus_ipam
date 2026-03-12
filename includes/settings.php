@@ -55,12 +55,13 @@ function cereus_ipam_config_settings() {
 		),
 		'cereus_ipam_scan_method' => array(
 			'friendly_name' => __('Scan Method', 'cereus_ipam'),
-			'description'   => __('How to detect alive hosts. Auto uses fping from poller (fastest, requires raw sockets) and TCP connect from web UI (works everywhere). TCP uses parallel non-blocking socket connections. fping forces fping for all contexts (may fail from web UI under SELinux). On Windows/IIS, Auto will use fping.exe from poller if available, otherwise TCP.', 'cereus_ipam'),
+			'description'   => __('How to detect alive hosts. Auto uses fping from poller (fastest, requires raw sockets), native ping on Windows, and TCP connect as last resort. Ping uses the OS native ping command (ICMP) — works everywhere but is slower for large subnets. TCP uses parallel non-blocking socket connections. fping forces fping for all contexts (may fail from web UI under SELinux).', 'cereus_ipam'),
 			'method'        => 'drop_array',
 			'default'       => 'auto',
 			'array'         => array(
-				'auto'  => __('Auto (fping from poller, TCP from web)', 'cereus_ipam'),
+				'auto'  => __('Auto (fping from poller, native ping on Windows, TCP fallback)', 'cereus_ipam'),
 				'fping' => __('fping (requires raw socket capability)', 'cereus_ipam'),
+				'ping'  => __('Native Ping (ICMP via OS ping command)', 'cereus_ipam'),
 				'tcp'   => __('TCP Connect (works everywhere)', 'cereus_ipam'),
 			),
 		),

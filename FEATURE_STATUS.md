@@ -1,4 +1,4 @@
-# Cereus IPAM — Feature Status (v1.0.0)
+# Cereus IPAM — Feature Status (v1.2.0)
 
 ## Community Tier (Free)
 
@@ -27,7 +27,7 @@
 | Full IPv6 / Dual-Stack | DONE |
 | VLAN Management (CRUD, subnet mapping) | DONE |
 | VRF Management (CRUD, overlapping spaces) | DONE |
-| Network Scanning (fping + TCP parallel fallback) | DONE |
+| Network Scanning (fping + native ping + TCP parallel fallback) | DONE |
 | ARP Table Scanning (SNMP discovery) | DONE |
 | DNS integration (forward/reverse lookup) | DONE |
 | Custom Fields (6 types: text, textarea, dropdown, checkbox, date, url) | DONE |

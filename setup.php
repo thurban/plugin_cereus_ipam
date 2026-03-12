@@ -62,7 +62,7 @@ function plugin_cereus_ipam_uninstall() {
 function plugin_cereus_ipam_version() {
 	return array(
 		'name'     => 'cereus_ipam',
-		'version'  => '1.1.0',
+		'version'  => '1.2.0',
 		'longname' => 'Cereus IPAM',
 		'author'   => 'Urban-Software.de / Thomas Urban',
 		'homepage' => 'https://www.urban-software.com',

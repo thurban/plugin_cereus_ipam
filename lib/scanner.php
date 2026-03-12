@@ -10,13 +10,19 @@
 /**
  * Get the effective scan method for the current execution context.
  *
- * @return string 'fping' or 'tcp'
+ * @return string 'fping', 'ping', or 'tcp'
  */
 function cereus_ipam_scan_get_method() {
+	global $config;
+
 	$configured = read_config_option('cereus_ipam_scan_method');
 
 	if ($configured === 'fping') {
 		return 'fping';
+	}
+
+	if ($configured === 'ping') {
+		return 'ping';
 	}
 
 	if ($configured === 'tcp') {
@@ -24,12 +30,18 @@ function cereus_ipam_scan_get_method() {
 	}
 
 	/* auto: fping from CLI/poller (runs as root, no SELinux httpd_t),
+	 * native ping on Windows (always available),
 	 * TCP parallel from web (always works, no raw sockets needed) */
 	if (php_sapi_name() === 'cli') {
 		$fping_path = cereus_ipam_scan_find_fping();
 		if (!empty($fping_path)) {
 			return 'fping';
 		}
+	}
+
+	/* On Windows without fping, use native ping (ICMP) */
+	if (isset($config['cacti_server_os']) && $config['cacti_server_os'] == 'win32') {
+		return 'ping';
 	}
 
 	return 'tcp';
@@ -202,7 +214,11 @@ function cereus_ipam_scan_ping($subnet_id) {
 			return cereus_ipam_scan_fping($subnet_id, $subnet, $fping_path, $cidr);
 		}
 
-		/* fping not available, fall through to TCP */
+		/* fping not available, fall through to native ping or TCP */
+	}
+
+	if ($method === 'ping' || ($method === 'fping' && empty(cereus_ipam_scan_find_fping()))) {
+		return cereus_ipam_scan_ping_native($subnet_id, $subnet);
 	}
 
 	return cereus_ipam_scan_tcp_parallel($subnet_id, $subnet);
@@ -276,6 +292,149 @@ function cereus_ipam_scan_fping($subnet_id, $subnet, $fping_path, $cidr) {
 		'alive_ips'   => $alive,
 		'subnet'      => $cidr,
 		'method'      => 'fping',
+	);
+}
+
+/**
+ * Subnet sweep using the native OS ping command (ICMP).
+ * Works on Windows (ping -n 1 -w timeout) and Linux (ping -c 1 -W timeout).
+ * Processes IPs in parallel batches to keep sweep time reasonable.
+ *
+ * @param int   $subnet_id
+ * @param array $subnet
+ * @return array
+ */
+function cereus_ipam_scan_ping_native($subnet_id, $subnet) {
+	global $config;
+
+	$range = cereus_ipam_cidr_to_range($subnet['subnet'], $subnet['mask']);
+	$version = cereus_ipam_ip_version($subnet['subnet']);
+	$start = cereus_ipam_ip_to_gmp($range['first']);
+	$end   = cereus_ipam_ip_to_gmp($range['last']);
+
+	$total_size = gmp_intval(gmp_sub($end, $start)) + 1;
+	$timeout_ms = cereus_ipam_scan_get_timeout();
+	$is_windows = (isset($config['cacti_server_os']) && $config['cacti_server_os'] == 'win32');
+
+	/* Timeout in seconds for ping command (minimum 1) */
+	$timeout_sec = max(1, (int) ceil($timeout_ms / 1000));
+
+	$alive = array();
+	$now = date('Y-m-d H:i:s');
+
+	/* Build IP list */
+	$all_ips = array();
+	$current = $start;
+
+	while (gmp_cmp($current, $end) <= 0) {
+		$all_ips[] = cereus_ipam_gmp_to_ip($current, $version);
+		$current = gmp_add($current, 1);
+	}
+
+	/* Process in batches of 20 concurrent pings to avoid overwhelming the system */
+	$batch_size = 20;
+	$chunk_count = 0;
+
+	for ($offset = 0; $offset < count($all_ips); $offset += $batch_size) {
+		$batch = array_slice($all_ips, $offset, $batch_size);
+
+		/* Heartbeat every 5 batches */
+		if (++$chunk_count % 5 === 0) {
+			set_config_option('cereus_ipam_scan_active_' . $subnet_id, time());
+		}
+
+		/* Launch batch pings in parallel using proc_open */
+		$procs = array();
+		$pipes_all = array();
+
+		foreach ($batch as $ip) {
+			if ($is_windows) {
+				if ($version == 6) {
+					$cmd = 'ping -6 -n 1 -w ' . ($timeout_ms) . ' ' . cacti_escapeshellarg($ip);
+				} else {
+					$cmd = 'ping -n 1 -w ' . ($timeout_ms) . ' ' . cacti_escapeshellarg($ip);
+				}
+			} else {
+				if ($version == 6) {
+					$cmd = 'ping6 -c 1 -W ' . $timeout_sec . ' ' . cacti_escapeshellarg($ip) . ' 2>&1';
+				} else {
+					$cmd = 'ping -c 1 -W ' . $timeout_sec . ' ' . cacti_escapeshellarg($ip) . ' 2>&1';
+				}
+			}
+
+			$descriptors = array(
+				0 => array('pipe', 'r'),
+				1 => array('pipe', 'w'),
+				2 => array('pipe', 'w'),
+			);
+
+			$pipes = array();
+			$proc = @proc_open($cmd, $descriptors, $pipes);
+
+			if (is_resource($proc)) {
+				fclose($pipes[0]); /* close stdin */
+				$procs[$ip] = $proc;
+				$pipes_all[$ip] = $pipes;
+			}
+		}
+
+		/* Collect results */
+		foreach ($procs as $ip => $proc) {
+			$output = stream_get_contents($pipes_all[$ip][1]);
+			fclose($pipes_all[$ip][1]);
+			fclose($pipes_all[$ip][2]);
+			$rc = proc_close($proc);
+
+			$is_alive = false;
+
+			if ($is_windows) {
+				/* Windows ping: rc == 0 means success, also check for "TTL=" in output */
+				if ($rc === 0 && (stripos($output, 'TTL=') !== false || stripos($output, 'time=') !== false || stripos($output, 'time<') !== false)) {
+					$is_alive = true;
+				}
+			} else {
+				/* Linux/Unix ping: rc == 0 means at least one reply received */
+				if ($rc === 0) {
+					$is_alive = true;
+				}
+			}
+
+			if ($is_alive) {
+				$alive[] = $ip;
+			}
+
+			/* Store scan result */
+			db_execute_prepared("INSERT INTO plugin_cereus_ipam_scan_results
+				(subnet_id, ip, is_alive, scan_type, scanned_at)
+				VALUES (?, ?, ?, 'ping', ?)",
+				array($subnet_id, $ip, $is_alive ? 1 : 0, $now));
+
+			/* Try reverse DNS for alive hosts */
+			if ($is_alive) {
+				$hostname = @gethostbyaddr($ip);
+
+				if ($hostname !== $ip && $hostname !== false) {
+					db_execute_prepared("UPDATE plugin_cereus_ipam_scan_results
+						SET hostname = ? WHERE subnet_id = ? AND ip = ? AND scanned_at = ?",
+						array($hostname, $subnet_id, $ip, $now));
+				}
+			}
+		}
+	}
+
+	/* Update subnet last_scanned */
+	db_execute_prepared("UPDATE plugin_cereus_ipam_subnets SET last_scanned = NOW() WHERE id = ?", array($subnet_id));
+
+	/* Run conflict detection after scan */
+	cereus_ipam_post_scan_conflict_check($subnet_id);
+
+	return array(
+		'success'     => true,
+		'alive_count' => count($alive),
+		'alive_ips'   => $alive,
+		'subnet'      => $subnet['subnet'] . '/' . $subnet['mask'],
+		'total_ips'   => $total_size,
+		'method'      => 'ping',
 	);
 }
 
@@ -527,8 +686,9 @@ function cereus_ipam_tcp_connect_batch($ips, $port, $timeout_ms) {
 /**
  * Ping a single host. Returns true if alive, or an array with details.
  *
- * Uses TCP connect via PHP socket_create() (like Cacti's own ping_tcp).
- * Works under SELinux httpd_t — no raw sockets, no exec(), no log spam.
+ * Uses native ICMP ping on Windows, or TCP connect via PHP socket_create()
+ * on Linux (like Cacti's own ping_tcp). Falls back to native ping if the
+ * sockets extension is not available.
  *
  * @param string $ip      IP address to check
  * @param int    $timeout Timeout in seconds
@@ -536,16 +696,34 @@ function cereus_ipam_tcp_connect_batch($ips, $port, $timeout_ms) {
  * @return bool|array
  */
 function cereus_ipam_ping_host($ip, $timeout = 1, $details = false) {
-	if (!function_exists('socket_create')) {
-		if ($details) {
-			return array('alive' => false, 'method' => 'none', 'latency' => '', 'error' => 'sockets extension not loaded');
+	global $config;
+
+	$method = cereus_ipam_scan_get_method();
+	$timeout_ms = max(200, $timeout * 1000);
+
+	/* Use native ICMP ping if configured or on Windows without sockets */
+	if ($method === 'ping' || !function_exists('socket_create')) {
+		$result = cereus_ipam_ping_native_host($ip, $timeout_ms);
+
+		if ($result['alive']) {
+			if ($details) {
+				return $result;
+			}
+
+			return true;
 		}
 
-		return false;
+		/* If native ping failed and sockets are available, try TCP as fallback */
+		if (!function_exists('socket_create')) {
+			if ($details) {
+				return array('alive' => false, 'method' => 'ping', 'latency' => '');
+			}
+
+			return false;
+		}
 	}
 
 	$ports = cereus_ipam_scan_get_tcp_ports();
-	$timeout_ms = max(200, $timeout * 1000);
 
 	/* Suppress PHP warnings from socket functions */
 	set_error_handler(function () { return true; });
@@ -567,6 +745,78 @@ function cereus_ipam_ping_host($ip, $timeout = 1, $details = false) {
 	}
 
 	return false;
+}
+
+/**
+ * Ping a single host using the native OS ping command (ICMP).
+ *
+ * @param string $ip         IP address
+ * @param int    $timeout_ms Timeout in milliseconds
+ * @return array ['alive' => bool, 'method' => string, 'latency' => string]
+ */
+function cereus_ipam_ping_native_host($ip, $timeout_ms) {
+	global $config;
+
+	$is_windows = (isset($config['cacti_server_os']) && $config['cacti_server_os'] == 'win32');
+	$version = (strpos($ip, ':') !== false) ? 6 : 4;
+	$timeout_sec = max(1, (int) ceil($timeout_ms / 1000));
+
+	if ($is_windows) {
+		if ($version == 6) {
+			$cmd = 'ping -6 -n 1 -w ' . ($timeout_ms) . ' ' . cacti_escapeshellarg($ip);
+		} else {
+			$cmd = 'ping -n 1 -w ' . ($timeout_ms) . ' ' . cacti_escapeshellarg($ip);
+		}
+	} else {
+		if ($version == 6) {
+			$cmd = 'ping6 -c 1 -W ' . $timeout_sec . ' ' . cacti_escapeshellarg($ip) . ' 2>&1';
+		} else {
+			$cmd = 'ping -c 1 -W ' . $timeout_sec . ' ' . cacti_escapeshellarg($ip) . ' 2>&1';
+		}
+	}
+
+	$start = microtime(true);
+	$output = array();
+	exec($cmd, $output, $rc);
+	$elapsed = round((microtime(true) - $start) * 1000, 1);
+
+	$is_alive = false;
+	$latency = '';
+
+	if ($is_windows) {
+		if ($rc === 0) {
+			$output_str = implode("\n", $output);
+
+			if (stripos($output_str, 'TTL=') !== false || stripos($output_str, 'time=') !== false || stripos($output_str, 'time<') !== false) {
+				$is_alive = true;
+
+				/* Extract latency from Windows output: "time=Xms" or "time<1ms" */
+				if (preg_match('/time[=<](\d+)ms/i', $output_str, $m)) {
+					$latency = $m[1] . ' ms';
+				} else {
+					$latency = $elapsed . ' ms';
+				}
+			}
+		}
+	} else {
+		if ($rc === 0) {
+			$is_alive = true;
+			$output_str = implode("\n", $output);
+
+			/* Extract latency from Linux output: "time=X.X ms" */
+			if (preg_match('/time=([\d.]+)\s*ms/i', $output_str, $m)) {
+				$latency = $m[1] . ' ms';
+			} else {
+				$latency = $elapsed . ' ms';
+			}
+		}
+	}
+
+	return array(
+		'alive'   => $is_alive,
+		'method'  => 'ping',
+		'latency' => $latency,
+	);
 }
 
 /**
@@ -675,6 +925,13 @@ function cereus_ipam_tcp_ping($ip, $ports, $timeout_ms) {
  * Returns discovered IP+MAC pairs.
  */
 function cereus_ipam_scan_arp($subnet_id) {
+	global $config;
+
+	/* Ensure Cacti SNMP functions are available */
+	if (!function_exists('cacti_snmp_walk')) {
+		include_once($config['base_path'] . '/lib/snmp.php');
+	}
+
 	$subnet = db_fetch_row_prepared("SELECT * FROM plugin_cereus_ipam_subnets WHERE id = ?", array($subnet_id));
 
 	if (!cacti_sizeof($subnet)) {

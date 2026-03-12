@@ -26,7 +26,7 @@ A ground-up rewrite of the legacy nmidPhpip plugin, built with modern security p
 - Full IPv6 support (dual-stack, GMP-based math)
 - VLAN management with subnet-to-VLAN mapping
 - VRF support for overlapping address spaces
-- Network scanning: fping (poller) and parallel TCP probing (web)
+- Network scanning: fping (poller), native ICMP ping, and parallel TCP probing (web)
 - ARP table scanning via SNMP discovery
 - DNS integration (forward/reverse lookups)
 - Custom fields (text, textarea, dropdown, checkbox, date, URL)
@@ -92,7 +92,7 @@ After installing Cereus IPAM, navigate to Console > Cereus Tools > IPAM Subnets 
 - CSRF protection via Cacti's built-in token system
 - XSS prevention via html_escape() on all output
 - Secure file upload handling (whitelist extensions, MIME check, size limit)
-- Network scanning uses non-blocking sockets (no shell command injection)
+- Network scanning uses non-blocking sockets or OS ping command (shell arguments escaped via cacti_escapeshellarg)
 
 ## License
 
