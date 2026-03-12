@@ -55,7 +55,7 @@ function cereus_ipam_config_settings() {
 		),
 		'cereus_ipam_scan_method' => array(
 			'friendly_name' => __('Scan Method', 'cereus_ipam'),
-			'description'   => __('How to detect alive hosts. Auto uses fping from poller (fastest, requires raw sockets) and TCP connect from web UI (works everywhere). TCP uses parallel non-blocking socket connections. fping forces fping for all contexts (may fail from web UI under SELinux).', 'cereus_ipam'),
+			'description'   => __('How to detect alive hosts. Auto uses fping from poller (fastest, requires raw sockets) and TCP connect from web UI (works everywhere). TCP uses parallel non-blocking socket connections. fping forces fping for all contexts (may fail from web UI under SELinux). On Windows/IIS, Auto will use fping.exe from poller if available, otherwise TCP.', 'cereus_ipam'),
 			'method'        => 'drop_array',
 			'default'       => 'auto',
 			'array'         => array(
@@ -66,7 +66,7 @@ function cereus_ipam_config_settings() {
 		),
 		'cereus_ipam_fping_path' => array(
 			'friendly_name' => __('fping Path', 'cereus_ipam'),
-			'description'   => __('Path to the fping binary. Leave empty for auto-detection (/usr/sbin/fping).', 'cereus_ipam'),
+			'description'   => __('Path to the fping binary. Leave empty for auto-detection. Linux: /usr/sbin/fping, Windows: C:\\fping\\fping.exe or in PATH.', 'cereus_ipam'),
 			'method'        => 'textbox',
 			'default'       => '',
 			'max_length'    => 255,

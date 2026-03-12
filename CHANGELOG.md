@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.0.1] - 2026-03-12
+
+### Added
+- Comprehensive INSTALL guide covering Linux and Windows/IIS deployment
+- PHP extension pre-flight checks on plugin enable (GMP required, sockets recommended)
+
+### Changed
+- Network scanner now fully compatible with Windows/IIS environments
+  - Platform-aware fping binary detection (Windows paths, Cacti base dir, PATH)
+  - Portable shell escaping via cacti_escapeshellcmd() / cacti_escapeshellarg()
+  - Windows stderr redirect handling (skip unsupported 2>&1)
+  - Winsock error code mapping for TCP connect scanning (10061/10036/10035)
+  - Graceful fallback when PHP sockets extension is unavailable
+- Updated settings descriptions to document Windows/IIS behavior and paths
+- fping path setting now shows example paths for both Linux and Windows
+
+### Fixed
+- TCP connect scanner hardcoded Unix errno values (111, 115) now use platform-correct codes
+- Socket extension guard prevents fatal errors on hosts without ext-sockets
+
 ## [1.0.0] - 2026-03-11
 
 ### Added

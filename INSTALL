@@ -1,0 +1,698 @@
+================================================================================
+ Cereus IPAM - Installation Guide
+ Version 1.0.0
+ Copyright (C) 2024-2026 Urban-Software.de / Thomas Urban
+================================================================================
+
+ Table of Contents
+
+ 1. Requirements
+ 2. Installation on Linux (Apache / Nginx)
+ 3. Installation on Windows (IIS)
+ 4. Post-Install Configuration
+ 5. PHP Extension Reference
+ 6. Security: SELinux (RHEL/Rocky/AlmaLinux)
+ 7. Security: Firewall Settings
+ 8. Security: File Permissions
+ 9. Optional Components
+10. License Activation
+11. Upgrading
+12. Troubleshooting
+
+================================================================================
+ 1. REQUIREMENTS
+================================================================================
+
+  Cacti Version       1.2.0 or later (1.2.24+ recommended)
+  PHP Version         7.4 or later (8.0+ recommended)
+  Database            MySQL 5.7+ / MariaDB 10.2+
+
+  Required PHP Extensions:
+  ~~~~~~~~~~~~~~~~~~~~~~~~
+    gmp               IPv4/IPv6 address math (plugin will NOT load without it)
+
+  Recommended PHP Extensions:
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    sockets            TCP network scanning (Professional+ license)
+    curl               Webhook callbacks (Enterprise license)
+    snmp               DHCP scope monitoring and ARP scanning (Enterprise)
+    gd / imagick       PDF report generation (Professional+)
+
+  Optional External Tools:
+  ~~~~~~~~~~~~~~~~~~~~~~~~
+    fping              Fast ICMP ping sweep for network scanning
+                       (falls back to TCP scanning if unavailable)
+
+  Optional Cacti Plugins:
+  ~~~~~~~~~~~~~~~~~~~~~~~
+    cereus_license     License validation for Professional/Enterprise tiers.
+                       Without it the plugin runs in Community mode (free).
+    restapi            Required only for REST API endpoints (Enterprise).
+
+================================================================================
+ 2. INSTALLATION ON LINUX (Apache / Nginx)
+================================================================================
+
+  2.1  Extract the Plugin
+  ~~~~~~~~~~~~~~~~~~~~~~~
+
+    cd /var/www/html/cacti/plugins/
+    tar xzf cereus_ipam-1.0.0.tar.gz
+
+    -- or clone from GitHub --
+
+    cd /var/www/html/cacti/plugins/
+    git clone https://github.com/thurban/plugin_cereus_ipam.git cereus_ipam
+
+  2.2  Install Required PHP Extensions
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    Debian / Ubuntu:
+      apt install php-gmp php-sockets php-curl php-snmp
+
+    RHEL / Rocky / AlmaLinux (with Remi repository):
+      dnf install php-gmp php-sockets php-curl php-snmp
+
+    After installing, restart your web server:
+
+      systemctl restart httpd        # Apache on RHEL
+      systemctl restart apache2      # Apache on Debian
+      systemctl restart nginx        # Nginx (also restart php-fpm)
+      systemctl restart php-fpm
+
+  2.3  Set File Ownership
+  ~~~~~~~~~~~~~~~~~~~~~~~
+
+    The plugin directory must be owned by the web server user.
+
+    RHEL / Rocky / AlmaLinux (Apache):
+      chown -R apache:apache /var/www/html/cacti/plugins/cereus_ipam/
+
+    Debian / Ubuntu (Apache):
+      chown -R www-data:www-data /var/www/html/cacti/plugins/cereus_ipam/
+
+    Nginx (typically):
+      chown -R nginx:nginx /var/www/html/cacti/plugins/cereus_ipam/
+
+  2.4  Install fping (Optional, for ICMP Scanning)
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    fping is used for fast ICMP-based network scanning from the Cacti poller.
+    If fping is not installed, the plugin falls back to TCP-based scanning
+    which works everywhere without special permissions.
+
+    Debian / Ubuntu:
+      apt install fping
+
+    RHEL / Rocky / AlmaLinux:
+      dnf install fping
+
+    Verify:
+      which fping          # Should return /usr/sbin/fping or /usr/bin/fping
+      fping --version
+
+    Note: fping requires raw socket capability. When run from the Cacti
+    poller (CLI as root or cacti user), this is typically available. From
+    the web UI, fping is NOT used — the plugin automatically falls back to
+    TCP scanning in the web context.
+
+  2.5  Enable the Plugin in Cacti
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    1. Log in to Cacti as an administrator.
+    2. Navigate to Configuration > Plugins.
+    3. Find "Cereus IPAM" in the list and click "Install".
+    4. After installation, click "Enable".
+    5. Navigate to Configuration > Settings > Cereus IPAM to configure.
+    6. Grant users access: Configuration > Users > (user) > Realm Permissions
+       > check "Plugin: Cereus IPAM - Manage".
+
+================================================================================
+ 3. INSTALLATION ON WINDOWS (IIS)
+================================================================================
+
+  3.1  Prerequisites
+  ~~~~~~~~~~~~~~~~~~
+
+    - Cacti for Windows installed and functional (see Cacti documentation)
+    - PHP installed as FastCGI under IIS (PHP 7.4+ or 8.0+)
+    - MySQL or MariaDB installed and accessible
+
+  3.2  Extract the Plugin
+  ~~~~~~~~~~~~~~~~~~~~~~~
+
+    Extract the plugin archive to Cacti's plugins directory:
+
+      C:\inetpub\wwwroot\cacti\plugins\cereus_ipam\
+
+    Ensure the directory structure is:
+
+      C:\inetpub\wwwroot\cacti\plugins\cereus_ipam\setup.php
+      C:\inetpub\wwwroot\cacti\plugins\cereus_ipam\INFO
+      C:\inetpub\wwwroot\cacti\plugins\cereus_ipam\lib\
+      C:\inetpub\wwwroot\cacti\plugins\cereus_ipam\includes\
+      ...
+
+    Note: Adjust the base path if your Cacti installation is in a different
+    location (e.g. C:\Cacti\plugins\cereus_ipam\).
+
+  3.3  Enable Required PHP Extensions
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    Open your php.ini file (typically C:\PHP\php.ini or wherever PHP is
+    installed) and ensure the following extensions are uncommented:
+
+      extension=gmp             ; REQUIRED - IPv4/IPv6 math
+      extension=sockets         ; Recommended - TCP network scanning
+      extension=curl            ; Recommended - Webhook support
+      extension=snmp            ; Recommended - DHCP/ARP scanning
+
+    After editing php.ini, restart IIS:
+
+      iisreset
+
+    To verify the extensions are loaded, open a command prompt:
+
+      php -m | findstr gmp
+      php -m | findstr sockets
+
+    Or check phpinfo() output via Cacti's Utilities > Technical Support.
+
+  3.4  Install fping for Windows (Optional)
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    fping is available for Windows as a third-party build. If you want
+    ICMP-based scanning from the poller (faster than TCP for large subnets):
+
+    1. Download fping for Windows (e.g. from the Cacti forums or
+       https://github.com/schweikert/fping — Windows builds may be
+       community-provided).
+
+    2. Place fping.exe in a known location, for example:
+
+         C:\fping\fping.exe
+
+    3. In Cacti, configure the path under:
+       Configuration > Settings > Cereus IPAM > fping Path
+
+       Enter:  C:\fping\fping.exe
+
+    If fping is not installed, the plugin uses TCP-based scanning which
+    works without any external tools. For most Windows deployments, TCP
+    scanning is the recommended approach.
+
+  3.5  IIS File Permissions
+  ~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    The IIS application pool identity (typically IIS_IUSRS or the
+    application pool's virtual account) must have read access to the
+    plugin directory.
+
+    Using icacls from an elevated Command Prompt:
+
+      icacls "C:\inetpub\wwwroot\cacti\plugins\cereus_ipam" /grant "IIS_IUSRS:(OI)(CI)R" /T
+
+    If your application pool runs under a specific identity (e.g.
+    "IIS AppPool\Cacti"), use that instead:
+
+      icacls "C:\inetpub\wwwroot\cacti\plugins\cereus_ipam" /grant "IIS AppPool\Cacti:(OI)(CI)R" /T
+
+    The temp directory must also be writable for CSV report generation:
+
+      icacls "%TEMP%" /grant "IIS_IUSRS:(OI)(CI)M"
+
+  3.6  IIS URL Rewrite (if applicable)
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    Cereus IPAM does not require URL rewriting. All pages are accessed
+    directly via their .php filenames through Cacti's navigation. No
+    web.config rules are needed for the plugin itself.
+
+  3.7  Enable the Plugin in Cacti
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    Follow the same steps as section 2.5 above:
+
+    1. Configuration > Plugins > Install "Cereus IPAM"
+    2. Enable the plugin
+    3. Configure under Configuration > Settings > Cereus IPAM
+    4. Grant user permissions via Realm Permissions
+
+================================================================================
+ 4. POST-INSTALL CONFIGURATION
+================================================================================
+
+  After enabling the plugin, navigate to:
+
+    Configuration > Settings > Cereus IPAM
+
+  4.1  General Settings
+  ~~~~~~~~~~~~~~~~~~~~~
+
+    Enabled (cereus_ipam_enabled)
+      Master switch. Default: On.
+
+    Device Sync (cereus_ipam_device_sync)
+      Automatically link Cacti devices to IPAM addresses by matching
+      hostnames/IPs. Runs every poller cycle. Default: On.
+
+  4.2  Network Scanning (Professional+ License)
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    Scheduled Scanning (cereus_ipam_scan_enabled)
+      Enable automatic scanning of subnets on their configured intervals.
+      Default: Off.
+
+    Max Concurrent Scans (cereus_ipam_scan_concurrent)
+      Maximum subnets to scan simultaneously per poller cycle.
+      Default: 5.
+
+    Scan Method (cereus_ipam_scan_method)
+      - Auto:  Uses fping from CLI/poller (fastest), TCP from web UI.
+               On Windows, uses fping.exe if available, otherwise TCP.
+      - fping: Forces fping for all contexts (may fail from web UI).
+      - TCP:   Parallel non-blocking TCP connect. Works on all platforms
+               without special permissions. Default: Auto.
+
+    fping Path (cereus_ipam_fping_path)
+      Leave empty for auto-detection. The plugin searches:
+      - Linux:   /usr/sbin/fping, /usr/bin/fping, /usr/local/*/fping,
+                 and Cacti's configured fping path.
+      - Windows: C:\fping\fping.exe, Cacti base path, and PATH dirs.
+
+    TCP Probe Ports (cereus_ipam_scan_tcp_ports)
+      Comma-separated TCP ports for host detection. Tried in order; stops
+      at first alive response. Default: 80,443,22.
+
+    Scan Timeout (cereus_ipam_scan_timeout)
+      Timeout per scan batch in milliseconds (100-30000). Default: 2000.
+
+  4.3  Alert Settings (Professional+ License)
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    Threshold Alerts: Email warnings when subnet utilization exceeds the
+    configured percentage. Uses Cacti's mail subsystem.
+
+    Conflict Alerts: Email warnings when IP conflicts are detected (MAC
+    mismatch, rogue IPs, stale addresses).
+
+    Both support manual email addresses and/or Cacti notification lists.
+    Cooldown prevents alert spam (default: 86400 seconds / 24 hours).
+
+  4.4  Scheduled Reports (Professional+ License)
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    Automated email reports with CSV attachments covering utilization,
+    address states, and stale address listings.
+
+    Frequency: daily, weekly (default), or monthly.
+
+  4.5  Webhooks (Enterprise License)
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    POST JSON event payloads to external URLs on subnet/address changes.
+    Configure one URL per line. 5-second timeout per request.
+    Test button available on the settings page.
+
+================================================================================
+ 5. PHP EXTENSION REFERENCE
+================================================================================
+
+  +------------+----------+--------------------------------------------------+
+  | Extension  | Status   | Purpose                                          |
+  +------------+----------+--------------------------------------------------+
+  | gmp        | REQUIRED | All IPv4/IPv6 address calculations. Plugin will  |
+  |            |          | not load without this extension.                 |
+  +------------+----------+--------------------------------------------------+
+  | sockets    | Recomm.  | TCP-based network scanning. Required for the TCP |
+  |            |          | scan method (Professional+ feature). Not needed  |
+  |            |          | if using fping exclusively.                      |
+  +------------+----------+--------------------------------------------------+
+  | curl       | Recomm.  | Webhook callbacks to external URLs (Enterprise). |
+  |            |          | Not needed if webhooks are not used.              |
+  +------------+----------+--------------------------------------------------+
+  | snmp       | Recomm.  | ARP table scanning via SNMP and DHCP scope       |
+  |            |          | monitoring (Enterprise). Uses Cacti's built-in   |
+  |            |          | SNMP functions.                                  |
+  +------------+----------+--------------------------------------------------+
+
+  Linux quick-check:
+    php -m | grep -E "gmp|sockets|curl|snmp"
+
+  Windows quick-check:
+    php -m | findstr "gmp sockets curl snmp"
+
+  Or in Cacti: Utilities > Technical Support > PHP Module Information.
+
+================================================================================
+ 6. SECURITY: SELinux (RHEL / Rocky / AlmaLinux)
+================================================================================
+
+  If SELinux is enabled (enforcing mode), the following considerations apply.
+
+  6.1  Web UI Access (httpd_t context)
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    The plugin's PHP files run under the httpd_t SELinux context. The
+    following operations are handled automatically:
+
+    - Database access:  Allowed via httpd_can_network_connect_db
+    - TCP scanning:     Works under httpd_t (uses PHP sockets, no raw
+                        sockets needed)
+    - DNS resolution:   Allowed natively
+    - Webhook calls:    Requires httpd_can_network_connect
+
+    Enable network connectivity for outbound webhook/email calls:
+
+      setsebool -P httpd_can_network_connect on
+
+    This is typically already enabled if Cacti sends email or uses
+    Thold/notification plugins.
+
+  6.2  Poller Context (unconfined_t or cacti_t)
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    The Cacti poller (cron/systemd) typically runs as root or the cacti
+    user under unconfined_t, which has no restrictions.
+
+    fping requires raw sockets (CAP_NET_RAW). When run from the poller
+    as root, this is available. If the poller runs as a non-root user:
+
+      # Option A: Set capability on fping binary
+      setcap cap_net_raw+ep /usr/sbin/fping
+
+      # Option B: Set SUID bit (less recommended)
+      chmod u+s /usr/sbin/fping
+
+    Note: From the web UI, fping is NEVER used. The plugin automatically
+    falls back to TCP scanning in the web context, which requires no
+    special capabilities.
+
+  6.3  File Context Labels
+  ~~~~~~~~~~~~~~~~~~~~~~~~
+
+    Plugin files should have the httpd_sys_content_t label. If you
+    extracted the plugin from a tarball or Git, restore the labels:
+
+      restorecon -Rv /var/www/html/cacti/plugins/cereus_ipam/
+
+    Verify:
+      ls -Z /var/www/html/cacti/plugins/cereus_ipam/setup.php
+      # Should show: system_u:object_r:httpd_sys_content_t:s0
+
+  6.4  SELinux Quick Reference
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    Check current mode:
+      getenforce
+
+    Check relevant booleans:
+      getsebool httpd_can_network_connect
+      getsebool httpd_can_network_connect_db
+
+    If you encounter "Permission denied" errors in the Cacti log, check
+    the SELinux audit log:
+      ausearch -m avc -ts recent | grep cereus_ipam
+
+================================================================================
+ 7. SECURITY: FIREWALL SETTINGS
+================================================================================
+
+  7.1  Inbound (to the Cacti Server)
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    No additional inbound ports are required. The plugin uses Cacti's
+    existing web interface (typically port 80/443).
+
+    If you have the REST API plugin (Enterprise) and expose it externally,
+    ensure your existing Cacti web port rules apply.
+
+  7.2  Outbound (from the Cacti Server)
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    The plugin may need outbound connectivity for the following features:
+
+    +------------------+------------+----------------------------------------+
+    | Feature          | Port/Proto | Destination                            |
+    +------------------+------------+----------------------------------------+
+    | Email alerts     | TCP 25/587 | Your SMTP server (uses Cacti's mailer) |
+    | Webhook calls    | TCP 80/443 | Configured webhook URLs (Enterprise)   |
+    | SNMP ARP scan    | UDP 161    | Cacti-monitored devices                |
+    | SNMP DHCP poll   | UDP 161    | DHCP servers (Enterprise)              |
+    | DNS resolution   | UDP 53     | DNS server (for reverse lookups)       |
+    | fping ICMP sweep | ICMP       | Target subnets (if fping is used)      |
+    | TCP scan         | TCP *      | Target subnets on configured ports     |
+    |                  |            | (default: 80, 443, 22)                 |
+    +------------------+------------+----------------------------------------+
+
+    Linux (firewalld):
+
+      # Email (if not already open):
+      firewall-cmd --permanent --add-port=25/tcp
+      firewall-cmd --permanent --add-port=587/tcp
+
+      # ICMP (for fping, typically already allowed):
+      firewall-cmd --permanent --add-icmp-block-inversion
+
+      # Reload:
+      firewall-cmd --reload
+
+    Linux (iptables):
+
+      # Allow outbound ICMP for fping:
+      iptables -A OUTPUT -p icmp --icmp-type echo-request -j ACCEPT
+
+      # Allow outbound TCP for scanning:
+      iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
+      iptables -A OUTPUT -p tcp --dport 80 -j ACCEPT
+      iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT
+
+    Windows Firewall (PowerShell, elevated):
+
+      # Allow outbound ICMP for fping:
+      New-NetFirewallRule -DisplayName "Cacti IPAM ICMP" `
+        -Direction Outbound -Protocol ICMPv4 -Action Allow
+
+      # Allow outbound TCP scanning (if needed):
+      New-NetFirewallRule -DisplayName "Cacti IPAM TCP Scan" `
+        -Direction Outbound -Protocol TCP `
+        -RemotePort 22,80,443 -Action Allow
+
+    Note: Most server firewalls allow outbound connections by default.
+    These rules are only needed if your firewall has a restrictive
+    outbound policy.
+
+================================================================================
+ 8. SECURITY: FILE PERMISSIONS
+================================================================================
+
+  8.1  Linux
+  ~~~~~~~~~~
+
+    All plugin files should be owned by the web server user and be
+    read-only. No files need write access.
+
+      chown -R apache:apache /var/www/html/cacti/plugins/cereus_ipam/
+      find /var/www/html/cacti/plugins/cereus_ipam/ -type f -exec chmod 644 {} \;
+      find /var/www/html/cacti/plugins/cereus_ipam/ -type d -exec chmod 755 {} \;
+
+    Replace "apache:apache" with your web server user (www-data, nginx).
+
+  8.2  Windows
+  ~~~~~~~~~~~~
+
+    The IIS application pool identity needs Read & Execute permissions.
+    No Write permissions are needed on the plugin directory.
+
+      icacls "C:\inetpub\wwwroot\cacti\plugins\cereus_ipam" /grant "IIS_IUSRS:(OI)(CI)RX" /T
+
+    The system temp directory must be writable for CSV report generation:
+
+      icacls "%SystemRoot%\Temp" /grant "IIS_IUSRS:(OI)(CI)M"
+
+================================================================================
+ 9. OPTIONAL COMPONENTS
+================================================================================
+
+  9.1  Cereus License Manager Plugin
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    For Professional or Enterprise features, install the Cereus License
+    Manager plugin:
+
+      https://github.com/thurban/plugin_cereus_license
+
+    Without the license plugin, Cereus IPAM runs in Community mode with:
+    - 10 subnet limit
+    - IPv4 only
+    - CSV import limited to 500 rows
+    - 30-day changelog retention
+    - No scheduled scanning, VLANs, VRFs, custom fields, reports,
+      webhooks, DHCP monitoring, or multi-tenancy
+
+  9.2  REST API Plugin (Enterprise)
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    For REST API access to IPAM data, install the Cereus REST API plugin.
+    Cereus IPAM automatically registers its endpoints when both plugins
+    are active.
+
+    Endpoints registered:
+    - GET/POST /ipam/sections
+    - GET/POST /ipam/subnets
+    - GET/POST /ipam/addresses
+    - GET      /ipam/vlans
+    - GET      /ipam/vrfs
+    - POST     /ipam/scan/{subnet_id}
+
+  9.3  fping Binary
+  ~~~~~~~~~~~~~~~~~
+
+    fping provides faster ICMP-based scanning compared to TCP probing.
+    It is most useful for large subnets (/22 and bigger) where TCP
+    scanning may be slower.
+
+    The plugin automatically detects whether fping is available and
+    falls back to TCP scanning if it is not. TCP scanning works on all
+    platforms without any external tools or special permissions.
+
+    Performance comparison (typical /24 subnet, 256 hosts):
+    - fping:        ~2-3 seconds
+    - TCP parallel: ~3-5 seconds (depends on configured timeout)
+
+================================================================================
+ 10. LICENSE ACTIVATION
+================================================================================
+
+  If you have purchased a Professional or Enterprise license:
+
+  1. Install the Cereus License Manager plugin (see section 9.1).
+  2. Navigate to Configuration > Settings > Cereus License.
+  3. Paste your license key in the "Cereus IPAM" field.
+  4. Click Save. The license status will update immediately.
+  5. Verify under Configuration > Settings > Cereus IPAM — the header
+     will show "Professional License" or "Enterprise License".
+
+  License tiers unlock the following features:
+
+  +----------------------+-----------+--------------+------------+
+  | Feature              | Community | Professional | Enterprise |
+  +----------------------+-----------+--------------+------------+
+  | Subnets              | 10        | Unlimited    | Unlimited  |
+  | IPv6 Support         |           | Yes          | Yes        |
+  | VLANs / VRFs         |           | Yes          | Yes        |
+  | Custom Fields        |           | Yes          | Yes        |
+  | Network Scanning     | Manual/TCP| Scheduled    | Scheduled  |
+  | ARP/SNMP Scanning    |           | Yes          | Yes        |
+  | Threshold Alerts     |           | Yes          | Yes        |
+  | Conflict Detection   |           | Yes          | Yes        |
+  | Reports / PDF        |           | Yes          | Yes        |
+  | Scheduled Reports    |           | Yes          | Yes        |
+  | Regex Search         |           | Yes          | Yes        |
+  | RBAC per Section     |           | Yes          | Yes        |
+  | Bulk IP Fill         |           | Yes          | Yes        |
+  | NAT Mapping          |           | Yes          | Yes        |
+  | LDAP/AD RBAC         |           |              | Yes        |
+  | Multi-Tenancy        |           |              | Yes        |
+  | Maintenance Windows  |           |              | Yes        |
+  | DHCP Monitoring      |           |              | Yes        |
+  | Webhooks             |           |              | Yes        |
+  | REST API             |           |              | Yes        |
+  | Rack/Locations       |           |              | Yes        |
+  | Capacity Forecasting |           |              | Yes        |
+  | Reconciliation       |           |              | Yes        |
+  +----------------------+-----------+--------------+------------+
+
+================================================================================
+ 11. UPGRADING
+================================================================================
+
+  1. Disable the plugin in Cacti: Configuration > Plugins > Disable.
+  2. Back up the plugin directory and your database.
+  3. Replace the plugin files with the new version.
+  4. Restore file ownership (see section 8).
+  5. Enable the plugin: Configuration > Plugins > Enable.
+  6. The plugin will automatically run any necessary database migrations
+     on the next poller cycle.
+
+  Database tables are never dropped during upgrades. New columns are
+  added via ALTER TABLE statements that check for existence first.
+
+================================================================================
+ 12. TROUBLESHOOTING
+================================================================================
+
+  12.1  Plugin Does Not Appear in Plugin List
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    - Verify the directory name is exactly "cereus_ipam" (case-sensitive
+      on Linux).
+    - Verify setup.php and INFO files exist in the plugin directory.
+    - Check Cacti log for PHP errors: Utilities > View Cacti Log.
+
+  12.2  Plugin Fails to Install / "Check Configuration" Error
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    - The PHP GMP extension is missing. Install it and restart PHP/web
+      server (see section 5).
+    - Check: php -m | grep gmp
+
+  12.3  Network Scanning Returns No Results
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    - Verify the PHP sockets extension is loaded (for TCP scanning).
+    - If using fping, verify it is installed and the path is correct:
+        fping -v
+    - Check that outbound ICMP or TCP traffic is not blocked by a
+      firewall (see section 7).
+    - On SELinux systems, ensure httpd_can_network_connect is enabled
+      (see section 6.1).
+    - Try changing scan method to "TCP" in settings as a test.
+
+  12.4  Emails Not Sending (Alerts / Reports)
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    - Verify Cacti's mail configuration under Configuration > Settings >
+      Mail / Reporting / DNS.
+    - Send a test email from Cacti's settings page.
+    - Check the Cacti log for mailer errors.
+
+  12.5  Webhooks Not Firing
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    - Verify the PHP curl extension is loaded.
+    - Verify httpd_can_network_connect is enabled (SELinux).
+    - Use the "Test" button on the settings page to verify connectivity.
+    - Check the Cacti log for webhook errors.
+
+  12.6  Permission Denied Errors on Linux
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    - Check file ownership: ls -la plugins/cereus_ipam/
+    - Restore SELinux labels: restorecon -Rv plugins/cereus_ipam/
+    - Check SELinux audit log: ausearch -m avc -ts recent
+
+  12.7  Permission Denied Errors on Windows
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    - Check IIS application pool identity permissions (see section 3.5).
+    - Verify temp directory is writable (see section 8.2).
+    - Check Windows Event Viewer > Application log for PHP errors.
+
+  12.8  Slow Scanning Performance
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    - Install fping for ICMP scanning (faster than TCP for large subnets).
+    - Reduce the TCP scan timeout (default: 2000ms) if hosts respond
+      quickly on your network.
+    - Reduce the number of concurrent scans if the poller is overloaded.
+    - Consider scanning during off-peak hours via per-subnet schedules.
+
+================================================================================
+ Support
+
+   Email:    info@urban-software.de
+   Website:  https://www.urban-software.com
+   GitHub:   https://github.com/thurban/plugin_cereus_ipam
+   Forum:    https://forums.cacti.net/
+================================================================================

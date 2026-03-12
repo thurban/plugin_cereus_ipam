@@ -41,14 +41,48 @@ function cereus_ipam_scan_get_method() {
  * @return string path or empty string
  */
 function cereus_ipam_scan_find_fping() {
+	global $config;
+
 	$configured = read_config_option('cereus_ipam_fping_path');
 
 	if (!empty($configured) && is_executable($configured)) {
 		return $configured;
 	}
 
-	/* Auto-detect */
-	$candidates = array('/usr/sbin/fping', '/usr/bin/fping', '/usr/local/sbin/fping', '/usr/local/bin/fping');
+	/* Auto-detect based on platform */
+	if ($config['cacti_server_os'] == 'win32') {
+		/* Windows: check common locations and Cacti's configured path */
+		$cacti_fping = read_config_option('path_fping');
+
+		if (!empty($cacti_fping) && is_executable($cacti_fping)) {
+			return $cacti_fping;
+		}
+
+		$candidates = array(
+			'C:\\fping\\fping.exe',
+			$config['base_path'] . '\\fping.exe',
+		);
+
+		/* Also check PATH */
+		$path_dirs = explode(';', getenv('PATH'));
+
+		foreach ($path_dirs as $dir) {
+			$dir = rtrim($dir, '\\');
+
+			if (!empty($dir)) {
+				$candidates[] = $dir . '\\fping.exe';
+			}
+		}
+	} else {
+		$candidates = array('/usr/sbin/fping', '/usr/bin/fping', '/usr/local/sbin/fping', '/usr/local/bin/fping');
+
+		/* Also check Cacti's configured fping path */
+		$cacti_fping = read_config_option('path_fping');
+
+		if (!empty($cacti_fping) && !in_array($cacti_fping, $candidates)) {
+			array_unshift($candidates, $cacti_fping);
+		}
+	}
 
 	foreach ($candidates as $path) {
 		if (is_executable($path)) {
@@ -101,6 +135,28 @@ function cereus_ipam_scan_get_timeout() {
 	return 2000;
 }
 
+/**
+ * Get platform-appropriate socket error codes.
+ * Windows Winsock uses different error numbers than Unix.
+ *
+ * @return array with keys 'connrefused' and 'inprogress'
+ */
+function cereus_ipam_socket_error_codes() {
+	global $config;
+
+	if (isset($config['cacti_server_os']) && $config['cacti_server_os'] == 'win32') {
+		return array(
+			'connrefused' => array(defined('SOCKET_ECONNREFUSED') ? SOCKET_ECONNREFUSED : 10061, 10061),
+			'inprogress'  => array(defined('SOCKET_EINPROGRESS') ? SOCKET_EINPROGRESS : 10036, 10036, 10035),
+		);
+	}
+
+	return array(
+		'connrefused' => array(defined('SOCKET_ECONNREFUSED') ? SOCKET_ECONNREFUSED : 111, 111),
+		'inprogress'  => array(defined('SOCKET_EINPROGRESS') ? SOCKET_EINPROGRESS : 115, 115),
+	);
+}
+
 /* ==================== Subnet Sweep ==================== */
 
 /**
@@ -113,6 +169,8 @@ function cereus_ipam_scan_get_timeout() {
  * @return array
  */
 function cereus_ipam_scan_ping($subnet_id) {
+	global $config;
+
 	$subnet = db_fetch_row_prepared("SELECT * FROM plugin_cereus_ipam_subnets WHERE id = ?", array($subnet_id));
 
 	if (!cacti_sizeof($subnet)) {
@@ -130,7 +188,11 @@ function cereus_ipam_scan_ping($subnet_id) {
 
 			/* Use fping6 for IPv6 subnets if available */
 			if ($version == 6) {
-				$fping6 = dirname($fping_path) . '/fping6';
+				if ($config['cacti_server_os'] == 'win32') {
+					$fping6 = dirname($fping_path) . '\\fping6.exe';
+				} else {
+					$fping6 = dirname($fping_path) . '/fping6';
+				}
 
 				if (is_executable($fping6)) {
 					$fping_path = $fping6;
@@ -151,9 +213,16 @@ function cereus_ipam_scan_ping($subnet_id) {
  * Only works from CLI/poller context (not from web under SELinux httpd_t).
  */
 function cereus_ipam_scan_fping($subnet_id, $subnet, $fping_path, $cidr) {
+	global $config;
+
 	$timeout = cereus_ipam_scan_get_timeout();
-	$cmd = escapeshellcmd($fping_path) . ' -g -r 1 -t ' . (int) $timeout
-		. ' ' . escapeshellarg($cidr) . ' 2>&1';
+	$cmd = cacti_escapeshellcmd($fping_path) . ' -g -r 1 -t ' . (int) $timeout
+		. ' ' . cacti_escapeshellarg($cidr);
+
+	if ($config['cacti_server_os'] != 'win32') {
+		$cmd .= ' 2>&1';
+	}
+
 	$output = array();
 	exec($cmd, $output, $rc);
 
@@ -216,8 +285,16 @@ function cereus_ipam_scan_fping($subnet_id, $subnet, $fping_path, $cidr) {
  * Scans up to $batch_size IPs concurrently — a /24 finishes in ~timeout seconds.
  *
  * Works under SELinux httpd_t context (no raw sockets needed).
+ * On Windows/IIS, requires the PHP sockets extension (php_sockets.dll).
  */
 function cereus_ipam_scan_tcp_parallel($subnet_id, $subnet) {
+	if (!function_exists('socket_create')) {
+		return array(
+			'success' => false,
+			'error'   => __('PHP sockets extension is not loaded. Enable php_sockets.dll in php.ini for TCP scanning.', 'cereus_ipam'),
+		);
+	}
+
 	$range = cereus_ipam_cidr_to_range($subnet['subnet'], $subnet['mask']);
 	$version = cereus_ipam_ip_version($subnet['subnet']);
 	$start = cereus_ipam_ip_to_gmp($range['first']);
@@ -324,6 +401,7 @@ function cereus_ipam_tcp_connect_batch($ips, $port, $timeout_ms) {
 	$alive = array();
 	$sockets = array();
 	$socket_ips = array();
+	$errcodes = cereus_ipam_socket_error_codes();
 
 	foreach ($ips as $ip) {
 		$af = (strpos($ip, ':') !== false) ? AF_INET6 : AF_INET;
@@ -346,14 +424,14 @@ function cereus_ipam_tcp_connect_batch($ips, $port, $timeout_ms) {
 		$err = socket_last_error($sock);
 		socket_clear_error($sock);
 
-		if ($err === SOCKET_ECONNREFUSED || $err === 111) {
+		if (in_array($err, $errcodes['connrefused'])) {
 			/* Connection refused = host alive, port closed */
 			$alive[] = $ip;
 			@socket_close($sock);
 			continue;
 		}
 
-		if ($err === SOCKET_EINPROGRESS || $err === 115) {
+		if (in_array($err, $errcodes['inprogress'])) {
 			/* Connection in progress — add to select pool */
 			$idx = count($sockets);
 			$sockets[$idx] = $sock;
@@ -393,7 +471,7 @@ function cereus_ipam_tcp_connect_batch($ips, $port, $timeout_ms) {
 
 				$so_err = @socket_get_option($sock, SOL_SOCKET, SO_ERROR);
 
-				if ($so_err === 0 || $so_err === 111) {
+				if ($so_err === 0 || in_array($so_err, $errcodes['connrefused'])) {
 					/* Connected or connection refused — host is alive */
 					$alive[] = $socket_ips[$idx];
 				}
@@ -440,6 +518,14 @@ function cereus_ipam_tcp_connect_batch($ips, $port, $timeout_ms) {
  * @return bool|array
  */
 function cereus_ipam_ping_host($ip, $timeout = 1, $details = false) {
+	if (!function_exists('socket_create')) {
+		if ($details) {
+			return array('alive' => false, 'method' => 'none', 'latency' => '', 'error' => 'sockets extension not loaded');
+		}
+
+		return false;
+	}
+
 	$ports = cereus_ipam_scan_get_tcp_ports();
 	$timeout_ms = max(200, $timeout * 1000);
 
@@ -479,6 +565,7 @@ function cereus_ipam_tcp_ping($ip, $ports, $timeout_ms) {
 	$af = (strpos($ip, ':') !== false) ? AF_INET6 : AF_INET;
 	$to_sec  = (int) ($timeout_ms / 1000);
 	$to_usec = ($timeout_ms % 1000) * 1000;
+	$errcodes = cereus_ipam_socket_error_codes();
 
 	foreach ($ports as $port) {
 		$sock = @socket_create($af, SOCK_STREAM, SOL_TCP);
@@ -508,7 +595,7 @@ function cereus_ipam_tcp_ping($ip, $ports, $timeout_ms) {
 		$err = socket_last_error($sock);
 		socket_clear_error($sock);
 
-		if ($err === SOCKET_ECONNREFUSED || $err === 111) {
+		if (in_array($err, $errcodes['connrefused'])) {
 			$latency = round((microtime(true) - $start) * 1000, 1);
 			@socket_close($sock);
 
@@ -520,7 +607,7 @@ function cereus_ipam_tcp_ping($ip, $ports, $timeout_ms) {
 			);
 		}
 
-		if ($err === SOCKET_EINPROGRESS || $err === 115) {
+		if (in_array($err, $errcodes['inprogress'])) {
 			/* Wait for connection with socket_select() */
 			$r = null;
 			$w = array($sock);
@@ -543,7 +630,7 @@ function cereus_ipam_tcp_ping($ip, $ports, $timeout_ms) {
 					);
 				}
 
-				if ($so_err === 111) {
+				if (in_array($so_err, $errcodes['connrefused'])) {
 					@socket_close($sock);
 
 					return array(

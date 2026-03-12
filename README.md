@@ -54,16 +54,26 @@ A ground-up rewrite of the legacy nmidPhpip plugin, built with modern security p
 - Rack/location visualization (site/building/floor/room/rack hierarchy)
 - Location assignment on IP addresses with filtering
 
+## Platform Support
+
+- **Linux** — Apache/Nginx, tested on RHEL/Rocky/Debian/Ubuntu
+- **Windows** — IIS with PHP, tested on Windows Server 2019/2022
+
 ## Requirements
 
 - Cacti 1.2.0 or higher
 - PHP 8.1 or higher
-- GMP PHP extension (for IPv6 calculations)
+- GMP PHP extension (required for IPv4/IPv6 calculations)
 - MySQL/MariaDB with InnoDB support
+- Optional: PHP sockets extension (for TCP network scanning)
 - Optional: Cereus License Manager plugin (for Professional/Enterprise features)
 - Optional: Cereus REST API plugin (for REST API endpoints)
 
 ## Installation
+
+See the [INSTALL](INSTALL) file for detailed deployment instructions covering Linux, Windows/IIS, SELinux, firewall configuration, and troubleshooting.
+
+### Quick Start (Linux)
 
 1. Copy the `cereus_ipam` directory to `cacti/plugins/`
 2. Set ownership: `chown -R apache:apache cacti/plugins/cereus_ipam/`

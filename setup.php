@@ -62,7 +62,7 @@ function plugin_cereus_ipam_uninstall() {
 function plugin_cereus_ipam_version() {
 	return array(
 		'name'     => 'cereus_ipam',
-		'version'  => '1.0.0',
+		'version'  => '1.0.1',
 		'longname' => 'Cereus IPAM',
 		'author'   => 'Urban-Software.de / Thomas Urban',
 		'homepage' => 'https://www.urban-software.com',
@@ -72,7 +72,29 @@ function plugin_cereus_ipam_version() {
 }
 
 function plugin_cereus_ipam_check_config() {
+	/* GMP extension is required for all IPv4/IPv6 math */
+	if (!extension_loaded('gmp')) {
+		return false;
+	}
+
 	return true;
+}
+
+/**
+ * Return any installation issues to the user.
+ */
+function plugin_cereus_ipam_install_check() {
+	$issues = array();
+
+	if (!extension_loaded('gmp')) {
+		$issues[] = __('PHP GMP extension is required but not loaded. Enable php_gmp in php.ini.', 'cereus_ipam');
+	}
+
+	if (!function_exists('socket_create') && !extension_loaded('sockets')) {
+		$issues[] = __('PHP sockets extension is recommended for network scanning. Enable php_sockets in php.ini.', 'cereus_ipam');
+	}
+
+	return $issues;
 }
 
 function plugin_cereus_ipam_upgrade($info) {
