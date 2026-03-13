@@ -3,6 +3,7 @@
 ## [1.6.0] - 2026-03-13
 
 ### Fixed
+- **Nmap/fping broken on Windows** — `cacti_escapeshellcmd()` replaces backslashes with spaces, destroying paths like `C:\Program Files (x86)\Nmap\nmap.exe`; new `cereus_ipam_escape_binary_path()` helper uses `cacti_escapeshellarg()` (quoting) on Windows instead; stderr redirect `2>` also fixed for Windows paths with spaces; `is_executable()` replaced with `file_exists()` for Windows .exe detection
 - **Nmap scan completion detection** — nmap `-sn` only reports UP hosts in its XML `<host>` elements, so the scan appeared stuck at a low percentage (e.g. 10/254 = 4%) even after nmap finished; now parses `<runstats><hosts total="N"/>` for the correct count and inserts DB records for down hosts so progress tracking shows 100%
 - **Scan completion not detected by UI** — progress poller's 5-second race guard could prevent fast scans from being recognized as complete; now uses the persisted scan result as a definitive completion signal with no time guard needed
 - **Live scan feed flooded with "no response" entries** — nmap down-host records overwhelmed the feed; live feed now only shows alive hosts (server-side filtered), while stats bar still shows accurate totals

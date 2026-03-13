@@ -1,6 +1,7 @@
 No known issues.
 
 Fixed in v1.6.0:
+- Nmap and fping commands failed on Windows (backslash paths destroyed by escapeshellcmd)
 - Nmap scans appeared stuck (progress showed alive count instead of total scanned)
 - Scan completion not detected in the UI for fast-finishing scans
 - Live scan feed flooded with hundreds of "no response" entries from nmap

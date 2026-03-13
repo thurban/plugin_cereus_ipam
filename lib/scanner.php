@@ -8,6 +8,26 @@
 */
 
 /**
+ * Escape a binary path for use as a shell command.
+ *
+ * On Windows, cacti_escapeshellcmd() replaces backslashes with spaces,
+ * destroying paths like C:\Program Files (x86)\Nmap\nmap.exe.
+ * Use cacti_escapeshellarg() (which wraps in quotes) on Windows instead.
+ *
+ * @param string $path
+ * @return string
+ */
+function cereus_ipam_escape_binary_path($path) {
+	global $config;
+
+	if (isset($config['cacti_server_os']) && $config['cacti_server_os'] == 'win32') {
+		return cacti_escapeshellarg($path);
+	}
+
+	return cacti_escapeshellcmd($path);
+}
+
+/**
  * Check if a scan has been requested to stop.
  *
  * @param int $subnet_id
@@ -75,18 +95,21 @@ function cereus_ipam_scan_get_method() {
 function cereus_ipam_scan_find_fping() {
 	global $config;
 
+	$is_windows = ($config['cacti_server_os'] == 'win32');
 	$configured = read_config_option('cereus_ipam_fping_path');
 
-	if (!empty($configured) && is_executable($configured)) {
-		return $configured;
+	if (!empty($configured)) {
+		if ($is_windows ? file_exists($configured) : is_executable($configured)) {
+			return $configured;
+		}
 	}
 
 	/* Auto-detect based on platform */
-	if ($config['cacti_server_os'] == 'win32') {
+	if ($is_windows) {
 		/* Windows: check common locations and Cacti's configured path */
 		$cacti_fping = read_config_option('path_fping');
 
-		if (!empty($cacti_fping) && is_executable($cacti_fping)) {
+		if (!empty($cacti_fping) && file_exists($cacti_fping)) {
 			return $cacti_fping;
 		}
 
@@ -117,7 +140,7 @@ function cereus_ipam_scan_find_fping() {
 	}
 
 	foreach ($candidates as $path) {
-		if (is_executable($path)) {
+		if ($is_windows ? file_exists($path) : is_executable($path)) {
 			return $path;
 		}
 	}
@@ -328,7 +351,7 @@ function cereus_ipam_scan_fping($subnet_id, $subnet, $fping_path, $cidr) {
 	db_execute_prepared("UPDATE plugin_cereus_ipam_subnets SET last_scanned = NOW() WHERE id = ?", array($subnet_id));
 
 	/* Full command as executed (for copy-paste into CLI) */
-	$display_cmd = cacti_escapeshellcmd($fping_path) . ' -g -r 1 -t ' . (int) $timeout
+	$display_cmd = cereus_ipam_escape_binary_path($fping_path) . ' -g -r 1 -t ' . (int) $timeout
 		. ' ' . cacti_escapeshellarg($cidr);
 	if (!$is_windows) {
 		$display_cmd .= ' 2>&1';
@@ -360,7 +383,7 @@ function cereus_ipam_scan_fping($subnet_id, $subnet, $fping_path, $cidr) {
  * @return array of alive IP strings
  */
 function cereus_ipam_fping_cidr($fping_path, $cidr, $timeout, $is_windows, $subnet_id, $now) {
-	$cmd = cacti_escapeshellcmd($fping_path) . ' -g -r 1 -t ' . (int) $timeout
+	$cmd = cereus_ipam_escape_binary_path($fping_path) . ' -g -r 1 -t ' . (int) $timeout
 		. ' ' . cacti_escapeshellarg($cidr);
 
 	if (!$is_windows) {
@@ -383,7 +406,7 @@ function cereus_ipam_fping_cidr($fping_path, $cidr, $timeout, $is_windows, $subn
  * @return array of alive IP strings
  */
 function cereus_ipam_fping_range($fping_path, $first_ip, $last_ip, $timeout, $is_windows, $subnet_id, $now) {
-	$cmd = cacti_escapeshellcmd($fping_path) . ' -g -r 1 -t ' . (int) $timeout
+	$cmd = cereus_ipam_escape_binary_path($fping_path) . ' -g -r 1 -t ' . (int) $timeout
 		. ' ' . cacti_escapeshellarg($first_ip) . ' ' . cacti_escapeshellarg($last_ip);
 
 	if (!$is_windows) {
@@ -455,13 +478,18 @@ function cereus_ipam_fping_exec($cmd, $subnet_id, $now) {
 function cereus_ipam_scan_find_nmap() {
 	global $config;
 
+	$is_windows = (isset($config['cacti_server_os']) && $config['cacti_server_os'] == 'win32');
 	$configured = read_config_option('cereus_ipam_nmap_path');
 
-	if (!empty($configured) && is_executable($configured)) {
-		return $configured;
+	if (!empty($configured)) {
+		/* On Windows, is_executable() is unreliable for .exe files;
+		 * file_exists() is the correct check on NTFS. */
+		if ($is_windows ? file_exists($configured) : is_executable($configured)) {
+			return $configured;
+		}
 	}
 
-	if (isset($config['cacti_server_os']) && $config['cacti_server_os'] == 'win32') {
+	if ($is_windows) {
 		$candidates = array(
 			'C:\\Program Files (x86)\\Nmap\\nmap.exe',
 			'C:\\Program Files\\Nmap\\nmap.exe',
@@ -482,7 +510,7 @@ function cereus_ipam_scan_find_nmap() {
 	}
 
 	foreach ($candidates as $path) {
-		if (is_executable($path)) {
+		if ($is_windows ? file_exists($path) : is_executable($path)) {
 			return $path;
 		}
 	}
@@ -594,7 +622,7 @@ function cereus_ipam_scan_nmap($subnet_id, $subnet, $nmap_path) {
 
 	/* Full command as executed (for copy-paste into CLI) */
 	$timeout_sec = max(1, (int) ceil($timeout / 1000));
-	$display_cmd = cacti_escapeshellcmd($nmap_path)
+	$display_cmd = cereus_ipam_escape_binary_path($nmap_path)
 		. ' -sn -oX - --no-stylesheet'
 		. ' --host-timeout ' . $timeout_sec . 's'
 		. ' -T4';
@@ -666,7 +694,7 @@ function cereus_ipam_nmap_exec($nmap_path, $target, $timeout, $is_windows, $vers
 
 	$timeout_sec = max(1, (int) ceil($timeout / 1000));
 
-	$cmd = cacti_escapeshellcmd($nmap_path)
+	$cmd = cereus_ipam_escape_binary_path($nmap_path)
 		. ' -sn -oX - --no-stylesheet'
 		. ' --host-timeout ' . $timeout_sec . 's'
 		. ' -T4';
@@ -677,9 +705,15 @@ function cereus_ipam_nmap_exec($nmap_path, $target, $timeout, $is_windows, $vers
 
 	$cmd .= ' ' . cacti_escapeshellarg($target);
 
-	/* Capture stderr for error reporting */
+	/* Capture stderr for error reporting.
+	 * On Windows, 2> redirect works with unquoted paths only; use NUL
+	 * as a fallback if tempnam returns a path with spaces. */
 	$stderr_file = tempnam(sys_get_temp_dir(), 'nmap_err_');
-	$cmd .= ' 2>' . ($is_windows ? '' : '') . cacti_escapeshellarg($stderr_file);
+	if ($is_windows) {
+		$cmd .= ' 2>"' . $stderr_file . '"';
+	} else {
+		$cmd .= ' 2>' . cacti_escapeshellarg($stderr_file);
+	}
 
 	$output = array();
 	exec($cmd, $output, $rc);
