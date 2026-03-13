@@ -1,13 +1,12 @@
 No known issues.
 
-New in v1.4.0:
-- Visual Network Map (Tile Map + Hilbert Curve Heatmap) — see CHANGELOG.md
+Fixed in v1.5.0:
+- Device list disappeared from Management > Devices when plugin was installed
+- Scan results pagination was stuck on page 1
+- Show/hide "No Response" checkbox had no effect
+- Large scan result sets could lock up the browser (now server-side paginated)
 
-Fixed in v1.3.0:
-- Large subnet (/16) scans no longer stop at first /24 on any platform (Linux/Apache, Windows/IIS, Nginx)
-- Native ping scanner no longer builds entire IP range into memory
-- HTTP connection drops (Apache Timeout, IIS FastCGI ActivityTimeout) no longer abort running scans
-
-Fixed in v1.2.0:
-- ARP scan fatal error (cacti_snmp_walk undefined) resolved
-- Windows scan now uses native ICMP ping instead of TCP fallback
+New in v1.5.0:
+- Live scrolling scan feed with real-time IP status display
+- Stop scan button to cancel running scans
+- Server-side pagination and filtering for scan results

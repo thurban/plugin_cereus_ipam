@@ -62,7 +62,7 @@ function plugin_cereus_ipam_uninstall() {
 function plugin_cereus_ipam_version() {
 	return array(
 		'name'     => 'cereus_ipam',
-		'version'  => '1.4.0',
+		'version'  => '1.5.0',
 		'longname' => 'Cereus IPAM',
 		'author'   => 'Urban-Software.de / Thomas Urban',
 		'homepage' => 'https://www.urban-software.com',
@@ -623,8 +623,9 @@ function cereus_ipam_device_display_text($display_text) {
 }
 
 /**
- * Render the extra IPAM column for each device in the device list.
- * Hook: device_table_replace (function hook — receives $hosts array)
+ * Render all device table rows including the extra IPAM column.
+ * Hook: device_table_replace — completely replaces the normal rendering loop
+ * when device_display_text has added extra columns.
  */
 function cereus_ipam_device_table_replace($hosts) {
 	global $config;
@@ -637,7 +638,7 @@ function cereus_ipam_device_table_replace($hosts) {
 	$host_ids = array();
 	foreach ($hosts as $host) {
 		if (isset($host['id'])) {
-			$host_ids[] = $host['id'];
+			$host_ids[] = intval($host['id']);
 		}
 	}
 
@@ -654,24 +655,72 @@ function cereus_ipam_device_table_replace($hosts) {
 			$host_ids
 		);
 
-		foreach ($rows as $r) {
-			if (!isset($ipam_map[$r['cacti_host_id']])) {
-				$ipam_map[$r['cacti_host_id']] = $r;
+		if (cacti_sizeof($rows)) {
+			foreach ($rows as $r) {
+				if (!isset($ipam_map[$r['cacti_host_id']])) {
+					$ipam_map[$r['cacti_host_id']] = $r;
+				}
 			}
 		}
 	}
 
 	$plugin_url = $config['url_path'] . 'plugins/cereus_ipam/';
 
-	foreach ($hosts as &$host) {
-		$hid = $host['id'] ?? 0;
+	/* Render all device rows — replicate host.php normal rendering + IPAM column */
+	foreach ($hosts as $host) {
+		$disabled = ($host['disabled'] == 'on');
+
+		if (isset($host['thold_failure_count'])) {
+			$host_status = get_colored_device_status($disabled, $host['status'], $host['thold_failure_count'], $host['status_event_count']);
+		} else {
+			$host_status = get_colored_device_status($disabled, $host['status']);
+		}
+
+		if ($host['disabled'] == '' &&
+			($host['status'] == HOST_RECOVERING || $host['status'] == HOST_UP) &&
+			($host['availability_method'] != AVAIL_NONE && $host['availability_method'] != AVAIL_PING)) {
+			$uptime = get_uptime($host);
+		} else {
+			$uptime = __('N/A');
+		}
+
+		$graphs_url      = $config['url_path'] . 'graphs.php?reset=1&host_id=' . $host['id'];
+		$data_source_url = $config['url_path'] . 'data_sources.php?reset=1&host_id=' . $host['id'];
+
+		if (empty($host['graphs'])) {
+			$host['graphs'] = 0;
+		}
+
+		if (empty($host['data_sources'])) {
+			$host['data_sources'] = 0;
+		}
+
+		form_alternate_row('line' . $host['id'], true);
+		form_selectable_cell(filter_value($host['description'], get_request_var('filter'), 'host.php?action=edit&id=' . $host['id']), $host['id']);
+		form_selectable_cell(filter_value($host['hostname'], get_request_var('filter')), $host['id']);
+		form_selectable_cell(filter_value($host['id'], get_request_var('filter')), $host['id'], '', 'right');
+		form_selectable_cell('<a class="linkEditMain" href="' . $graphs_url . '">' . number_format_i18n($host['graphs'], '-1') . '</a>', $host['id'], '', 'right');
+		form_selectable_cell('<a class="linkEditMain" href="' . $data_source_url . '">' . number_format_i18n($host['data_sources'], '-1') . '</a>', $host['id'], '', 'right');
+		form_selectable_cell($host_status, $host['id'], '', 'center');
+		form_selectable_cell(get_timeinstate($host), $host['id'], '', 'right');
+		form_selectable_cell($uptime, $host['id'], '', 'right');
+		form_selectable_cell(round($host['polling_time'], 2), $host['id'], '', 'right');
+		form_selectable_cell(round(($host['cur_time']), 2), $host['id'], '', 'right');
+		form_selectable_cell(round(($host['avg_time']), 2), $host['id'], '', 'right');
+		form_selectable_cell(round($host['availability'], 2) . ' %', $host['id'], '', 'right');
+
+		/* IPAM Subnet column */
+		$hid = intval($host['id']);
 		if (isset($ipam_map[$hid])) {
 			$m = $ipam_map[$hid];
-			$host['cereus_ipam'] = '<a href="' . html_escape($plugin_url . 'cereus_ipam_addresses.php?subnet_id=' . $m['subnet_id']) . '">'
-				. html_escape($m['cidr']) . '</a>';
+			form_selectable_cell('<a class="linkEditMain" href="' . html_escape($plugin_url . 'cereus_ipam_addresses.php?subnet_id=' . $m['subnet_id']) . '">'
+				. html_escape($m['cidr']) . '</a>', $host['id']);
 		} else {
-			$host['cereus_ipam'] = '';
+			form_selectable_cell('', $host['id']);
 		}
+
+		form_checkbox_cell($host['description'], $host['id']);
+		form_end_row();
 	}
 
 	return $hosts;

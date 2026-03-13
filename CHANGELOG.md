@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.5.0] - 2026-03-13
+
+### Fixed
+- **Device list disappearing** — installing Cereus IPAM caused all devices to vanish from Management > Devices
+  - Root cause: `device_table_replace` hook must render complete HTML rows when `device_display_text` adds columns; previous implementation only enriched the `$hosts` array without outputting HTML
+  - Now renders all standard Cacti device columns (description, hostname, ID, graphs, data sources, status, uptime, polling time, current/average time, availability) plus the IPAM Subnet column
+- **Scan results pagination** — clicking page links always showed page 1
+  - Switched from AJAX injection (`return_to`) to standard Cacti `document.location` page navigation
+  - Uses `load_current_session_value` with standard `page` variable for proper session persistence
+- **Show/hide "No Response" checkbox** — checkbox had no effect after AJAX page loads
+  - jQuery `.change()` event binding fails in AJAX-injected content; replaced with inline `onchange` handler
+
+### Added
+- **Live scan feed** — real-time scrolling display of scanned IPs with color-coded alive/dead status during scan execution
+  - Terminal-style dark panel with green (alive) and grey (no response) indicators
+  - Auto-scrolls with manual scroll-up detection
+  - Progress bar with scanned/total/alive counters
+- **Stop scan** — cancel a running scan via red "Stop Scan" button
+  - Server-side stop flag checked between scan chunks (fping, native ping, and TCP parallel)
+  - Partial results preserved; conflict detection skipped on incomplete scans
+- **Server-side pagination** for scan results — handles large subnets (/16+) without browser lockup
+  - SQL LIMIT/OFFSET with proper page clamping
+  - "No Response" hosts hidden by default, toggled via checkbox with server-side filtering
+
+### Changed
+- Scan results table fully server-side rendered with `INET_ATON()` IP sorting
+- Scan progress endpoint returns incremental results via `last_id` cursor for live feed
+- Scanner functions return `stopped` flag in result array
+
 ## [1.4.0] - 2026-03-12
 
 ### Added

@@ -8,6 +8,19 @@
 */
 
 /**
+ * Check if a scan has been requested to stop.
+ *
+ * @param int $subnet_id
+ * @return bool
+ */
+function cereus_ipam_scan_is_stopped($subnet_id) {
+	$stop = db_fetch_cell_prepared("SELECT value FROM settings WHERE name = ?",
+		array('cereus_ipam_scan_stop_' . $subnet_id));
+
+	return (!empty($stop) && $stop !== '');
+}
+
+/**
  * Get the effective scan method for the current execution context.
  *
  * @return string 'fping', 'ping', or 'tcp'
@@ -270,6 +283,11 @@ function cereus_ipam_scan_fping($subnet_id, $subnet, $fping_path, $cidr) {
 				set_config_option('cereus_ipam_scan_active_' . $subnet_id, time());
 			}
 
+			/* Check for stop request */
+			if (cereus_ipam_scan_is_stopped($subnet_id)) {
+				break;
+			}
+
 			$chunk_alive = cereus_ipam_fping_range($fping_path, $first_ip, $last_ip,
 				$timeout, $is_windows, $subnet_id, $now);
 
@@ -283,14 +301,19 @@ function cereus_ipam_scan_fping($subnet_id, $subnet, $fping_path, $cidr) {
 			$is_windows, $subnet_id, $now);
 	}
 
+	$stopped = cereus_ipam_scan_is_stopped($subnet_id);
+
 	/* Update subnet last_scanned */
 	db_execute_prepared("UPDATE plugin_cereus_ipam_subnets SET last_scanned = NOW() WHERE id = ?", array($subnet_id));
 
 	/* Run conflict detection after scan */
-	cereus_ipam_post_scan_conflict_check($subnet_id);
+	if (!$stopped) {
+		cereus_ipam_post_scan_conflict_check($subnet_id);
+	}
 
 	return array(
 		'success'     => true,
+		'stopped'     => $stopped,
 		'alive_count' => count($alive),
 		'alive_ips'   => $alive,
 		'subnet'      => $cidr,
@@ -445,6 +468,11 @@ function cereus_ipam_scan_ping_native($subnet_id, $subnet) {
 			set_config_option('cereus_ipam_scan_active_' . $subnet_id, time());
 		}
 
+		/* Check for stop request */
+		if (cereus_ipam_scan_is_stopped($subnet_id)) {
+			break;
+		}
+
 		/* Build IP list for this chunk only */
 		$chunk_ips = array();
 		$current = $chunk_start;
@@ -541,14 +569,19 @@ function cereus_ipam_scan_ping_native($subnet_id, $subnet) {
 		$chunk_start = gmp_add($chunk_end, 1);
 	}
 
+	$stopped = cereus_ipam_scan_is_stopped($subnet_id);
+
 	/* Update subnet last_scanned */
 	db_execute_prepared("UPDATE plugin_cereus_ipam_subnets SET last_scanned = NOW() WHERE id = ?", array($subnet_id));
 
 	/* Run conflict detection after scan */
-	cereus_ipam_post_scan_conflict_check($subnet_id);
+	if (!$stopped) {
+		cereus_ipam_post_scan_conflict_check($subnet_id);
+	}
 
 	return array(
 		'success'     => true,
+		'stopped'     => $stopped,
 		'alive_count' => count($alive),
 		'alive_ips'   => $alive,
 		'subnet'      => $subnet['subnet'] . '/' . $subnet['mask'],
@@ -612,6 +645,11 @@ function cereus_ipam_scan_tcp_parallel($subnet_id, $subnet) {
 			set_config_option('cereus_ipam_scan_active_' . $subnet_id, time());
 		}
 
+		/* Check for stop request */
+		if (cereus_ipam_scan_is_stopped($subnet_id)) {
+			break;
+		}
+
 		/* Build IP list for this chunk */
 		$chunk_ips = array();
 		$current = $chunk_start;
@@ -667,14 +705,19 @@ function cereus_ipam_scan_tcp_parallel($subnet_id, $subnet) {
 
 	restore_error_handler();
 
+	$stopped = cereus_ipam_scan_is_stopped($subnet_id);
+
 	/* Update subnet last_scanned */
 	db_execute_prepared("UPDATE plugin_cereus_ipam_subnets SET last_scanned = NOW() WHERE id = ?", array($subnet_id));
 
 	/* Run conflict detection after scan */
-	cereus_ipam_post_scan_conflict_check($subnet_id);
+	if (!$stopped) {
+		cereus_ipam_post_scan_conflict_check($subnet_id);
+	}
 
 	return array(
 		'success'     => true,
+		'stopped'     => $stopped,
 		'alive_count' => count($alive_set),
 		'alive_ips'   => array_keys($alive_set),
 		'subnet'      => $subnet['subnet'] . '/' . $subnet['mask'],
