@@ -40,11 +40,49 @@ switch ($action) {
 	case 'apply_results':
 		cereus_ipam_apply_scan_results();
 		break;
+	case 'force_clear':
+		cereus_ipam_force_clear_scan();
+		break;
 	default:
 		top_header();
 		cereus_ipam_scan_page();
 		bottom_footer();
 		break;
+}
+
+/* ==================== Scan State Helpers ==================== */
+
+/**
+ * Check if a scan is actively running for a given subnet.
+ * Uses active flag + heartbeat to detect truly running vs crashed scans.
+ * Stale scans (heartbeat > 5 min old) are automatically cleared.
+ *
+ * @return array  ['running' => bool, 'stale' => bool, 'age' => int seconds]
+ */
+function cereus_ipam_check_scan_state($subnet_id) {
+	$active = read_config_option('cereus_ipam_scan_active_' . $subnet_id);
+
+	if (empty($active)) {
+		return array('running' => false, 'stale' => false, 'age' => 0);
+	}
+
+	$start_age = time() - (int) $active;
+
+	/* Check heartbeat — scanner updates this every chunk */
+	$heartbeat = read_config_option('cereus_ipam_scan_heartbeat_' . $subnet_id);
+	$hb_age = !empty($heartbeat) ? (time() - (int) $heartbeat) : $start_age;
+
+	/* Consider stale if heartbeat is older than 2 minutes, or start is older than 30 minutes */
+	if ($hb_age > 120 || $start_age > 1800) {
+		/* Auto-clear crashed scan */
+		set_config_option('cereus_ipam_scan_active_' . $subnet_id, '');
+		set_config_option('cereus_ipam_scan_stop_' . $subnet_id, '');
+		set_config_option('cereus_ipam_scan_heartbeat_' . $subnet_id, '');
+
+		return array('running' => false, 'stale' => true, 'age' => $start_age);
+	}
+
+	return array('running' => true, 'stale' => false, 'age' => $start_age);
 }
 
 /* ==================== Run Scan (AJAX) ==================== */
@@ -64,10 +102,18 @@ function cereus_ipam_run_scan_action() {
 		exit;
 	}
 
-	/* Clear any previous stop flag */
-	set_config_option('cereus_ipam_scan_stop_' . $subnet_id, '');
+	/* Check if a scan is already running for this subnet */
+	$state = cereus_ipam_check_scan_state($subnet_id);
+	if ($state['running']) {
+		header('Content-Type: application/json');
+		print json_encode(array('success' => false, 'error' => __('A scan is already running for this subnet.', 'cereus_ipam'), 'already_running' => true));
+		exit;
+	}
 
-	/* Mark scan as in-progress */
+	/* ---- Clean state: clear ALL previous scan artifacts ---- */
+	set_config_option('cereus_ipam_scan_stop_' . $subnet_id, '');
+	set_config_option('cereus_ipam_scan_result_' . $subnet_id, '');
+	set_config_option('cereus_ipam_scan_heartbeat_' . $subnet_id, time());
 	set_config_option('cereus_ipam_scan_active_' . $subnet_id, time());
 
 	/* Remove PHP execution time limit for large subnet scans (e.g. /16) */
@@ -81,22 +127,79 @@ function cereus_ipam_run_scan_action() {
 	/* Clear old scan results for this subnet */
 	db_execute_prepared("DELETE FROM plugin_cereus_ipam_scan_results WHERE subnet_id = ?", array($subnet_id));
 
+	/* Register shutdown handler to clear flags even if the scan crashes.
+	   This prevents a crashed scan from blocking future scans. */
+	register_shutdown_function(function () use ($subnet_id) {
+		$active = db_fetch_cell_prepared("SELECT value FROM settings WHERE name = ?",
+			array('cereus_ipam_scan_active_' . $subnet_id));
+		if (!empty($active)) {
+			set_config_option('cereus_ipam_scan_active_' . $subnet_id, '');
+			set_config_option('cereus_ipam_scan_stop_' . $subnet_id, '');
+			set_config_option('cereus_ipam_scan_heartbeat_' . $subnet_id, '');
+		}
+	});
+
 	/* Release session lock so progress polling AJAX can proceed concurrently */
 	session_write_close();
 
 	$result = cereus_ipam_scan_ping($subnet_id);
 
-	/* Clear in-progress and stop flags */
-	set_config_option('cereus_ipam_scan_active_' . $subnet_id, '');
-	set_config_option('cereus_ipam_scan_stop_' . $subnet_id, '');
-
 	cereus_ipam_changelog_record('scan', 'subnet', $subnet_id, null, array(
 		'alive'   => $result['alive_count'] ?? 0,
 		'stopped' => $result['stopped'] ?? false,
+		'method'  => $result['method'] ?? '',
 	));
+
+	/* Include method label for display */
+	$method_labels = array(
+		'fping'        => 'fping (ICMP)',
+		'nmap'         => 'Nmap (-sn ping scan)',
+		'ping'         => __('Native Ping (ICMP)', 'cereus_ipam'),
+		'tcp-parallel' => __('TCP Connect', 'cereus_ipam'),
+	);
+	$result['method_label'] = $method_labels[$result['method']] ?? $result['method'];
+
+	/* Persist scan summary BEFORE clearing active flag — avoids a race
+	   where the progress poller sees is_running=false but has no result. */
+	set_config_option('cereus_ipam_scan_result_' . $subnet_id, json_encode(array(
+		'alive_count'   => $result['alive_count'] ?? 0,
+		'dead_count'    => $result['dead_count'] ?? 0,
+		'total_scanned' => $result['total_scanned'] ?? 0,
+		'method'        => $result['method'] ?? '',
+		'method_label'  => $result['method_label'] ?? '',
+		'command'       => $result['command'] ?? '',
+		'elapsed'       => $result['elapsed'] ?? 0,
+		'exit_code'     => $result['exit_code'] ?? 0,
+		'stderr'        => $result['stderr'] ?? '',
+		'stopped'       => $result['stopped'] ?? false,
+		'success'       => $result['success'] ?? true,
+	)));
+
+	/* NOW clear in-progress flags (after result is persisted) */
+	set_config_option('cereus_ipam_scan_active_' . $subnet_id, '');
+	set_config_option('cereus_ipam_scan_stop_' . $subnet_id, '');
+	set_config_option('cereus_ipam_scan_heartbeat_' . $subnet_id, '');
 
 	header('Content-Type: application/json');
 	print json_encode($result, JSON_HEX_TAG | JSON_HEX_AMP);
+
+	/* Flush the HTTP response to the client, then run deferred tasks.
+	   This prevents slow conflict detection (DNS lookups) from blocking
+	   the scan result display in the browser. */
+	if (function_exists('fastcgi_finish_request')) {
+		fastcgi_finish_request();
+	} else {
+		if (ob_get_level()) {
+			ob_end_flush();
+		}
+		flush();
+	}
+
+	/* Deferred: conflict detection (contains slow gethostbyname() calls) */
+	if (!($result['stopped'] ?? false) && ($result['success'] ?? false)) {
+		cereus_ipam_post_scan_conflict_check($subnet_id);
+	}
+
 	exit;
 }
 
@@ -152,6 +255,26 @@ function cereus_ipam_stop_scan_action() {
 	exit;
 }
 
+/* ==================== Force Clear Stale Scan (AJAX) ==================== */
+
+function cereus_ipam_force_clear_scan() {
+	$subnet_id = get_filter_request_var('subnet_id', FILTER_VALIDATE_INT);
+
+	if (!$subnet_id) {
+		header('Content-Type: application/json');
+		print json_encode(array('success' => false, 'error' => 'Invalid subnet'));
+		exit;
+	}
+
+	set_config_option('cereus_ipam_scan_active_' . $subnet_id, '');
+	set_config_option('cereus_ipam_scan_stop_' . $subnet_id, '');
+	set_config_option('cereus_ipam_scan_heartbeat_' . $subnet_id, '');
+
+	header('Content-Type: application/json');
+	print json_encode(array('success' => true));
+	exit;
+}
+
 /* ==================== Scan Progress (AJAX polling) ==================== */
 
 function cereus_ipam_scan_progress() {
@@ -170,26 +293,38 @@ function cereus_ipam_scan_progress() {
 	$scanned = (int) db_fetch_cell_prepared("SELECT COUNT(*) FROM plugin_cereus_ipam_scan_results WHERE subnet_id = ?", array($subnet_id));
 	$alive   = (int) db_fetch_cell_prepared("SELECT COUNT(*) FROM plugin_cereus_ipam_scan_results WHERE subnet_id = ? AND is_alive = 1", array($subnet_id));
 
-	$active = read_config_option('cereus_ipam_scan_active_' . $subnet_id);
-	$is_running = (!empty($active) && (time() - (int) $active) < 1800);
+	$scan_state = cereus_ipam_check_scan_state($subnet_id);
+	$is_running = $scan_state['running'];
 
 	$pct = ($total > 0) ? min(100, round(($scanned / $total) * 100)) : 0;
 
-	/* Fetch recent results since last_id for live feed */
+	/* Fetch recent ALIVE results since last_id for live feed.
+	 * Only alive hosts are shown in the feed — down hosts would flood
+	 * the display (especially with nmap which batch-inserts them).
+	 * We track max_id across ALL rows (not just alive) to avoid
+	 * re-fetching the same down-host rows on the next poll. */
 	$last_id = get_filter_request_var('last_id', FILTER_VALIDATE_INT);
 	if (empty($last_id)) {
 		$last_id = 0;
 	}
 
+	/* Advance last_id past all rows (alive + down) so we don't re-scan them */
+	$new_max_id = (int) db_fetch_cell_prepared("SELECT COALESCE(MAX(id), 0)
+		FROM plugin_cereus_ipam_scan_results
+		WHERE subnet_id = ? AND id > ?",
+		array($subnet_id, $last_id));
+
+	$max_id = ($new_max_id > $last_id) ? $new_max_id : $last_id;
+
+	/* Only fetch alive hosts for the live feed display */
 	$recent = db_fetch_assoc_prepared("SELECT id, ip, is_alive, hostname
 		FROM plugin_cereus_ipam_scan_results
-		WHERE subnet_id = ? AND id > ?
+		WHERE subnet_id = ? AND id > ? AND is_alive = 1
 		ORDER BY id ASC
 		LIMIT 200",
 		array($subnet_id, $last_id));
 
 	$results = array();
-	$max_id = $last_id;
 
 	if (cacti_sizeof($recent)) {
 		foreach ($recent as $r) {
@@ -198,22 +333,29 @@ function cereus_ipam_scan_progress() {
 				'alive'    => (int) $r['is_alive'],
 				'hostname' => $r['hostname'] ?? '',
 			);
+		}
+	}
 
-			if ((int) $r['id'] > $max_id) {
-				$max_id = (int) $r['id'];
-			}
+	/* If scan has finished, include the persisted result summary so the
+	   UI can show statistics even when the main AJAX response was lost */
+	$scan_result = null;
+	if (!$is_running) {
+		$saved = read_config_option('cereus_ipam_scan_result_' . $subnet_id);
+		if (!empty($saved)) {
+			$scan_result = json_decode($saved, true);
 		}
 	}
 
 	header('Content-Type: application/json');
 	print json_encode(array(
-		'scanned'    => $scanned,
-		'alive'      => $alive,
-		'total'      => $total,
-		'pct'        => $pct,
-		'is_running' => $is_running,
-		'results'    => $results,
-		'last_id'    => $max_id,
+		'scanned'      => $scanned,
+		'alive'        => $alive,
+		'total'        => $total,
+		'pct'          => $pct,
+		'is_running'   => $is_running,
+		'results'      => $results,
+		'last_id'      => $max_id,
+		'scan_result'  => $scan_result,
 	), JSON_HEX_TAG | JSON_HEX_AMP);
 	exit;
 }
@@ -297,6 +439,7 @@ function cereus_ipam_scan_page() {
 							<input type='button' class='ui-button' id='btn_scan' value='<?php print __esc('Ping Scan', 'cereus_ipam'); ?>' <?php print ($subnet_id ? '' : 'disabled'); ?>>
 							<input type='button' class='ui-button' id='btn_arp_scan' value='<?php print __esc('ARP Scan (SNMP)', 'cereus_ipam'); ?>' <?php print ($subnet_id ? '' : 'disabled'); ?>>
 							<input type='button' class='ui-button ui-state-error' id='btn_stop' value='<?php print __esc('Stop Scan', 'cereus_ipam'); ?>' style='display:none;'>
+							<input type='button' class='ui-button' id='btn_force_clear' value='<?php print __esc('Clear Stale Scan', 'cereus_ipam'); ?>' style='display:none;'>
 							<?php if ($subnet_id): ?>
 							<input type='button' class='ui-button' id='btn_apply' value='<?php print __esc('Apply Results to IPAM', 'cereus_ipam'); ?>'>
 							<?php endif; ?>
@@ -305,6 +448,67 @@ function cereus_ipam_scan_page() {
 					</tr>
 				</table>
 			</form>
+			<div id='scan_method_info' style='margin-top:4px; padding:2px 0; font-size:12px; color:#888;'>
+				<?php
+				$method = cereus_ipam_scan_get_method();
+				$method_labels = array(
+					'fping'        => 'fping (ICMP)',
+					'nmap'         => 'Nmap (-sn ping scan)',
+					'ping'         => __('Native Ping (ICMP)', 'cereus_ipam'),
+					'tcp-parallel' => __('TCP Connect', 'cereus_ipam'),
+					'tcp'          => __('TCP Connect', 'cereus_ipam'),
+					'auto'         => __('Auto', 'cereus_ipam'),
+				);
+				$method_label = $method_labels[$method] ?? $method;
+
+				/* Build full command preview for nmap/fping */
+				$cmd_preview = '';
+				$binary_path = '';
+				$timeout_val = cereus_ipam_scan_get_timeout();
+
+				if ($method === 'nmap') {
+					$binary_path = cereus_ipam_scan_find_nmap();
+				} elseif ($method === 'fping') {
+					$binary_path = cereus_ipam_scan_find_fping();
+				}
+
+				if (($method === 'nmap' || $method === 'fping') && !empty($binary_path)) {
+					/* Get CIDR of selected subnet for command preview */
+					$preview_cidr = '{subnet}';
+					if ($subnet_id > 0) {
+						$preview_subnet = db_fetch_row_prepared("SELECT subnet, mask FROM plugin_cereus_ipam_subnets WHERE id = ?", array($subnet_id));
+						if (cacti_sizeof($preview_subnet)) {
+							$preview_cidr = $preview_subnet['subnet'] . '/' . $preview_subnet['mask'];
+						}
+					}
+
+					if ($method === 'nmap') {
+						$ts = max(1, (int) ceil($timeout_val / 1000));
+						$cmd_preview = cacti_escapeshellcmd($binary_path)
+							. ' -sn -oX - --no-stylesheet --host-timeout ' . $ts . 's -T4 '
+							. cacti_escapeshellarg($preview_cidr) . ' 2>/dev/null';
+					} else {
+						$cmd_preview = cacti_escapeshellcmd($binary_path)
+							. ' -g -r 1 -t ' . (int) $timeout_val . ' '
+							. cacti_escapeshellarg($preview_cidr) . ' 2>&1';
+					}
+				}
+
+				print '<i class="fa fa-cog"></i> ' . __('Scan Method:', 'cereus_ipam') . ' <strong>' . html_escape($method_label) . '</strong>';
+
+				if (!empty($binary_path)) {
+					print ' &mdash; ' . html_escape($binary_path);
+				} elseif ($method === 'nmap' || $method === 'fping') {
+					print ' &mdash; <span style="color:#F44336;">' . __('not found', 'cereus_ipam') . '</span>';
+				}
+
+				if (!empty($cmd_preview)) {
+					print '<br><i class="fa fa-terminal" style="margin-right:4px;"></i>';
+					print '<code id="scan_cmd_preview" style="font-size:12px; background:#1a1a2e; color:#0f0; padding:2px 8px; border-radius:3px; user-select:all;">'
+						. html_escape($cmd_preview) . '</code>';
+				}
+				?>
+			</div>
 		</td>
 	</tr>
 	<?php
@@ -332,7 +536,15 @@ function cereus_ipam_scan_page() {
 			</tbody>
 		</table>
 	</div>
+	<div id='scan_summary_container' style='display:none; margin-top:2px;'></div>
 	<?php
+
+	/* Detect if a scan is currently running for the selected subnet */
+	$scan_running_on_load = false;
+	if ($subnet_id > 0) {
+		$load_state = cereus_ipam_check_scan_state($subnet_id);
+		$scan_running_on_load = $load_state['running'];
+	}
 
 	/* JavaScript for scan controls and live feed */
 	?>
@@ -341,8 +553,31 @@ function cereus_ipam_scan_page() {
 		var progressTimer = null;
 		var lastId = 0;
 		var scanRunning = false;
+		var scanStartTime = 0;
 		var checkDoneTimer = null;
 		var autoScroll = true;
+		var lastProgressScanned = -1;
+		var staleProgressCount = 0;
+
+		/* Subnet CIDR map and command template for live preview updates */
+		var subnetCidrs = {
+			<?php
+			foreach ($subnets as $s) {
+				print "'" . (int) $s['id'] . "': " . json_encode($s['cidr']) . ",\n\t\t\t";
+			}
+			?>
+		};
+		var cmdTemplate = <?php print json_encode($cmd_preview); ?>;
+
+		function updateCmdPreview() {
+			var $el = $('#scan_cmd_preview');
+			if (!$el.length || !cmdTemplate) return;
+			var sid = $('#subnet_id').val();
+			var cidr = (sid && subnetCidrs[sid]) ? subnetCidrs[sid] : '{subnet}';
+			/* Replace the quoted CIDR in the template */
+			var updated = cmdTemplate.replace(/'[^']*'(\s*2>[/&]|$)/, "'" + cidr + "'$1");
+			$el.text(updated);
+		}
 
 		var $feed = $('#scan_live_feed');
 
@@ -360,22 +595,16 @@ function cereus_ipam_scan_page() {
 				var r = results[i];
 				var ts = new Date().toLocaleTimeString();
 
-				if (r.alive) {
-					html += '<div style="padding:1px 0;"><span style="color:#666;">[' + ts + ']</span> ';
-					html += '<span style="color:#4CAF50; font-weight:bold;">&#9679;</span> ';
-					html += '<span style="color:#4CAF50;">' + escapeHtml(r.ip) + '</span>';
-					if (r.hostname) {
-						html += ' <span style="color:#81C784;">(' + escapeHtml(r.hostname) + ')</span>';
-					}
-					html += ' <span style="color:#4CAF50;">- <?php print __esc('alive', 'cereus_ipam'); ?></span>';
-					html += '</div>';
-				} else {
-					html += '<div style="padding:1px 0;"><span style="color:#666;">[' + ts + ']</span> ';
-					html += '<span style="color:#555;">&#9679;</span> ';
-					html += '<span style="color:#777;">' + escapeHtml(r.ip) + '</span>';
-					html += ' <span style="color:#555;">- <?php print __esc('no response', 'cereus_ipam'); ?></span>';
-					html += '</div>';
+				/* Live feed only shows alive hosts (down hosts are filtered
+				 * server-side to avoid flooding the display) */
+				html += '<div style="padding:1px 0;"><span style="color:#666;">[' + ts + ']</span> ';
+				html += '<span style="color:#4CAF50; font-weight:bold;">&#9679;</span> ';
+				html += '<span style="color:#4CAF50;">' + escapeHtml(r.ip) + '</span>';
+				if (r.hostname) {
+					html += ' <span style="color:#81C784;">(' + escapeHtml(r.hostname) + ')</span>';
 				}
+				html += ' <span style="color:#4CAF50;">- <?php print __esc('alive', 'cereus_ipam'); ?></span>';
+				html += '</div>';
 			}
 
 			$feed.append(html);
@@ -389,6 +618,136 @@ function cereus_ipam_scan_page() {
 			var d = document.createElement('div');
 			d.appendChild(document.createTextNode(text));
 			return d.innerHTML;
+		}
+
+		function statCard(value, label, color, icon) {
+			return '<div style="flex:1; text-align:center; padding:18px 10px; border-right:1px solid #ddd; min-width:120px;">'
+				+ '<div style="font-size:28px; font-weight:bold; color:' + color + ';">' + value + '</div>'
+				+ '<div style="font-size:11px; color:#888; margin-top:5px;"><i class="fa ' + icon + '"></i> ' + label + '</div>'
+				+ '</div>';
+		}
+
+		function showScanDashboard(data) {
+			if (!data) return;
+
+			var aliveCount = parseInt(data.alive_count || data.alive || 0);
+			var deadCount = parseInt(data.dead_count || (data.scanned ? data.scanned - aliveCount : 0) || 0);
+			var totalScanned = parseInt(data.total_scanned || data.scanned || 0);
+			if (totalScanned === 0) totalScanned = aliveCount + deadCount;
+			var elapsed = parseFloat(data.elapsed || 0);
+			var methodLabel = data.method_label || data.method || '';
+			var subnet = data.subnet || '';
+			var command = data.command || '';
+			var exitCode = data.exit_code ? parseInt(data.exit_code) : 0;
+			var hasError = exitCode > 0 || (data.stderr && data.stderr.length > 0);
+			var stopped = data.stopped || false;
+			var isSuccess = data.success !== false && !hasError;
+			var alivePct = totalScanned > 0 ? ((aliveCount / totalScanned) * 100).toFixed(1) : 0;
+
+			/* Format duration */
+			var durationText;
+			if (elapsed >= 3600) {
+				var hrs = Math.floor(elapsed / 3600);
+				var mins = Math.floor((elapsed % 3600) / 60);
+				durationText = hrs + 'h ' + mins + 'm';
+			} else if (elapsed >= 60) {
+				var mins = Math.floor(elapsed / 60);
+				var secs = Math.round(elapsed % 60);
+				durationText = mins + 'm ' + secs + 's';
+			} else if (elapsed > 0) {
+				durationText = elapsed.toFixed(1) + 's';
+			} else {
+				durationText = '-';
+			}
+
+			/* Status determination */
+			var statusIcon, statusText, statusColor, headerBg;
+			if (stopped) {
+				statusIcon = 'fa-stop-circle';
+				statusText = '<?php print __esc('Scan Stopped', 'cereus_ipam'); ?>';
+				statusColor = '#FF9800';
+				headerBg = 'linear-gradient(135deg, #3e2e1a 0%, #4a3520 100%)';
+			} else if (!isSuccess) {
+				statusIcon = 'fa-exclamation-triangle';
+				statusText = '<?php print __esc('Scan Failed', 'cereus_ipam'); ?>';
+				statusColor = '#F44336';
+				headerBg = 'linear-gradient(135deg, #3e1a1a 0%, #4a2020 100%)';
+			} else {
+				statusIcon = 'fa-check-circle';
+				statusText = '<?php print __esc('Scan Complete', 'cereus_ipam'); ?>';
+				statusColor = '#4CAF50';
+				headerBg = 'linear-gradient(135deg, #1a3e1a 0%, #204a20 100%)';
+			}
+
+			var html = '<div style="border:1px solid #555; border-radius:5px; overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,0.15);">';
+
+			/* Header bar */
+			html += '<div style="padding:10px 15px; background:' + headerBg + ';">';
+			html += '<span style="color:' + statusColor + '; font-size:15px; font-weight:bold;">';
+			html += '<i class="fa ' + statusIcon + '"></i> ' + statusText + '</span>';
+			if (subnet) {
+				html += '<span style="color:#bbb; margin-left:15px; font-size:13px;">' + escapeHtml(subnet) + '</span>';
+			}
+			html += '</div>';
+
+			/* Stat cards row */
+			html += '<div style="display:flex; flex-wrap:wrap; border-bottom:1px solid #ddd;">';
+			html += statCard(totalScanned, '<?php print __esc('Hosts Scanned', 'cereus_ipam'); ?>', '#2c3e50', 'fa-server');
+			html += statCard(aliveCount, '<?php print __esc('Alive', 'cereus_ipam'); ?>', '#4CAF50', 'fa-check-circle');
+			html += statCard(deadCount, '<?php print __esc('No Response', 'cereus_ipam'); ?>', '#9E9E9E', 'fa-times-circle');
+			html += statCard(durationText, '<?php print __esc('Duration', 'cereus_ipam'); ?>', '#2196F3', 'fa-clock-o');
+			html += '</div>';
+
+			/* Alive/Dead ratio bar */
+			if (totalScanned > 0) {
+				var barColor = parseFloat(alivePct) > 50 ? '#4CAF50' : (parseFloat(alivePct) > 20 ? '#FF9800' : '#2196F3');
+				html += '<div style="padding:10px 15px; border-bottom:1px solid #ddd;">';
+				html += '<div style="display:flex; align-items:center; gap:12px;">';
+				html += '<span style="font-size:12px; color:#888; white-space:nowrap;"><?php print __esc('Alive Ratio', 'cereus_ipam'); ?></span>';
+				html += '<div style="flex:1; height:22px; background:#e0e0e0; border-radius:11px; overflow:hidden; position:relative;">';
+				html += '<div style="width:' + alivePct + '%; height:100%; background:' + barColor + '; border-radius:11px; transition:width 0.6s ease;"></div>';
+				html += '<span style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font-size:11px; font-weight:bold; color:#333; text-shadow:0 0 3px rgba(255,255,255,0.8);">';
+				html += alivePct + '% (' + aliveCount + ' / ' + totalScanned + ')</span>';
+				html += '</div>';
+				html += '</div>';
+				html += '</div>';
+			}
+
+			/* Details section: method + command */
+			html += '<div style="padding:10px 15px;">';
+			if (methodLabel) {
+				html += '<div style="font-size:13px; margin-bottom:6px;">';
+				html += '<span style="color:#888;"><i class="fa fa-cog"></i> <?php print __esc('Method:', 'cereus_ipam'); ?></span> ';
+				html += '<strong>' + escapeHtml(methodLabel) + '</strong>';
+				html += '</div>';
+			}
+
+			if (command) {
+				html += '<div style="margin-bottom:6px;">';
+				html += '<span style="color:#888; font-size:13px;"><i class="fa fa-terminal"></i> <?php print __esc('Command:', 'cereus_ipam'); ?></span>';
+				html += '<div style="margin-top:4px;">';
+				html += '<code style="display:block; font-size:12px; background:#1a1a2e; color:#0f0; padding:6px 12px; border-radius:4px; user-select:all; word-break:break-all;">' + escapeHtml(command) + '</code>';
+				html += '</div>';
+				html += '</div>';
+			}
+
+			/* Error section */
+			if (hasError) {
+				html += '<div style="margin-top:8px; padding:10px 12px; background:#fff5f5; border:1px solid #ffcdd2; border-radius:4px;">';
+				html += '<div style="color:#F44336; font-weight:bold; margin-bottom:4px;"><i class="fa fa-exclamation-triangle"></i> <?php print __esc('Error', 'cereus_ipam'); ?></div>';
+				if (exitCode > 0) {
+					html += '<div style="font-size:12px; color:#c62828;"><?php print __esc('Exit code:', 'cereus_ipam'); ?> ' + exitCode + '</div>';
+				}
+				if (data.stderr) {
+					html += '<pre style="margin:4px 0 0; padding:6px 10px; background:#2d1a1a; color:#ef9a9a; border-radius:3px; font-size:12px; white-space:pre-wrap; word-break:break-all;">' + escapeHtml(data.stderr) + '</pre>';
+				}
+				html += '</div>';
+			}
+
+			html += '</div>'; /* close details */
+			html += '</div>'; /* close outer container */
+
+			$('#scan_summary_container').html(html).show();
 		}
 
 		function updateProgress(sid) {
@@ -422,9 +781,46 @@ function cereus_ipam_scan_page() {
 
 					lastId = data.last_id;
 
-					/* Check if scan finished (for background-mode detection) */
+					/* Stale progress detection: if scanned count hasn't changed
+					   for multiple polls, the scan process likely crashed. */
+					if (scanRunning) {
+						if (data.scanned === lastProgressScanned) {
+							staleProgressCount++;
+							if (staleProgressCount >= 20) {
+								/* ~30 seconds with no progress — auto-complete as failed */
+								scanFinished(sid, {
+									success: false,
+									alive_count: data.alive,
+									dead_count: data.scanned - data.alive,
+									total_scanned: data.scanned,
+									error: '<?php print __esc('Scan process stopped responding.', 'cereus_ipam'); ?>'
+								});
+								return;
+							}
+							if (staleProgressCount >= 10) {
+								/* ~15 seconds — show force clear option */
+								$('#btn_force_clear').show();
+							}
+						} else {
+							staleProgressCount = 0;
+							lastProgressScanned = data.scanned;
+						}
+					}
+
+					/* Check if scan finished (detected by server-side state) */
 					if (!data.is_running && scanRunning) {
-						scanFinished(sid, data);
+						if (data.scan_result) {
+							/* Definitive: persisted result exists, scan truly completed
+							   (result is written BEFORE active flag is cleared) */
+							scanFinished(sid, data.scan_result);
+						} else {
+							/* No persisted result — could be a race (poller fired before
+							   scan POST was processed) or a crash. Use time guard. */
+							var elapsed = Date.now() - scanStartTime;
+							if (elapsed >= 3000) {
+								scanFinished(sid, data);
+							}
+						}
 					}
 				}
 			});
@@ -445,15 +841,30 @@ function cereus_ipam_scan_page() {
 
 		function scanStarted() {
 			scanRunning = true;
+			scanFinishedCalled = false;
+			scanStartTime = Date.now();
 			lastId = 0;
+			lastProgressScanned = -1;
+			staleProgressCount = 0;
 			$feed.empty();
+			$('#scan_summary_container').hide().empty();
+
+			/* Show method info in the live feed header */
+			var methodInfo = $('#scan_method_info').find('strong').text() || '';
+			if (methodInfo) {
+				$feed.append('<div style="padding:2px 0; color:#1976D2; font-weight:bold;"><i class="fa fa-cog"></i> <?php print __esc('Scan method:', 'cereus_ipam'); ?> ' + escapeHtml(methodInfo) + '</div><div style="border-bottom:1px solid #333; margin-bottom:4px;"></div>');
+			}
+
 			$('#scan_live_container').show();
 			$('#btn_stop').show();
 			$('#btn_scan').prop('disabled', true).val('<?php print __esc('Scanning...', 'cereus_ipam'); ?>');
 			$('#btn_arp_scan').prop('disabled', true);
 		}
 
+		var scanFinishedCalled = false;
 		function scanFinished(sid, data) {
+			if (scanFinishedCalled) return; /* Idempotent: safe to call multiple times */
+			scanFinishedCalled = true;
 			scanRunning = false;
 			stopProgress();
 			if (checkDoneTimer) {
@@ -462,23 +873,15 @@ function cereus_ipam_scan_page() {
 			}
 
 			$('#btn_stop').hide();
+			$('#btn_force_clear').hide();
 			$('#btn_scan').prop('disabled', false).val('<?php print __esc('Ping Scan', 'cereus_ipam'); ?>');
 			$('#btn_arp_scan').prop('disabled', false);
 
-			var aliveCount = data ? (data.alive || data.alive_count || 0) : '?';
-			var stopped = data && data.stopped;
-			var msg = stopped
-				? '<?php print __esc('Scan stopped', 'cereus_ipam'); ?>'
-				: '<?php print __esc('Scan complete', 'cereus_ipam'); ?>';
+			/* Hide live feed, show dashboard */
+			$('#scan_live_container').hide();
+			$('#scan_status').html('');
 
-			$('#scan_status').html('<span style="color:' + (stopped ? '#FF9800' : '#4CAF50') + ';font-weight:bold;">' + msg + ': ' + aliveCount + ' <?php print __esc('hosts alive', 'cereus_ipam'); ?></span>');
-
-			/* Append completion line to feed */
-			var ts = new Date().toLocaleTimeString();
-			$feed.append('<div style="padding:3px 0; border-top:1px solid #444; margin-top:4px; color:' + (stopped ? '#FF9800' : '#4CAF50') + '; font-weight:bold;">[' + ts + '] ' + msg + '</div>');
-			if (autoScroll) {
-				$feed.scrollTop($feed[0].scrollHeight);
-			}
+			showScanDashboard(data);
 
 			/* Reload the results table below */
 			loadPageNoHeader('cereus_ipam_scan.php?header=false&subnet_id=' + sid);
@@ -486,19 +889,22 @@ function cereus_ipam_scan_page() {
 
 		$('#subnet_id').change(function() {
 			var sid = $(this).val();
+			$('#scan_summary_container').hide().empty();
 			if (sid) {
 				$('#btn_scan').prop('disabled', false);
 				$('#btn_arp_scan').prop('disabled', false);
+				updateCmdPreview();
 				loadPageNoHeader('cereus_ipam_scan.php?header=false&subnet_id=' + sid);
 			} else {
 				$('#btn_scan').prop('disabled', true);
 				$('#btn_arp_scan').prop('disabled', true);
+				updateCmdPreview();
 			}
 		});
 
 		$('#btn_scan').click(function() {
 			var sid = $('#subnet_id').val();
-			if (!sid) return;
+			if (!sid || scanRunning) return;
 
 			scanStarted();
 			$('#scan_status').html('<i><?php print __esc('Starting scan...', 'cereus_ipam'); ?></i>');
@@ -512,15 +918,24 @@ function cereus_ipam_scan_page() {
 				dataType: 'json',
 				timeout: 1800000,
 				success: function(data) {
-					if (data.success) {
+					if (data.already_running) {
+						/* Another scan is running — show as running state */
+						$('#scan_status').html('<span style="color:#FF9800;font-weight:bold;"><i class="fa fa-spinner fa-spin"></i> <?php print __esc('A scan is already running for this subnet.', 'cereus_ipam'); ?></span>');
+						return;
+					}
+					if (data.success || data.alive_count !== undefined) {
+						/* Scan completed (possibly with errors) — show summary */
 						scanFinished(sid, data);
 					} else {
+						/* Pre-scan failure (license, invalid subnet) */
 						scanRunning = false;
 						stopProgress();
+						$('#scan_live_container').hide();
 						$('#btn_stop').hide();
 						$('#btn_scan').prop('disabled', false).val('<?php print __esc('Ping Scan', 'cereus_ipam'); ?>');
 						$('#btn_arp_scan').prop('disabled', false);
-						$('#scan_status').html('<span style="color:#F44336;"><?php print __esc('Error:', 'cereus_ipam'); ?> ' + data.error + '</span>');
+						var errMsg = data.error || data.stderr || '<?php print __esc('Unknown error', 'cereus_ipam'); ?>';
+						$('#scan_status').html('<span style="color:#F44336;"><?php print __esc('Error:', 'cereus_ipam'); ?> ' + escapeHtml(errMsg) + '</span>');
 					}
 				},
 				error: function(xhr, status) {
@@ -551,6 +966,29 @@ function cereus_ipam_scan_page() {
 
 			/* The scanner will stop within a few seconds at the next chunk boundary.
 			   The progress poller will detect is_running=false and call scanFinished. */
+		});
+
+		$('#btn_force_clear').click(function() {
+			var sid = $('#subnet_id').val();
+			if (!sid) return;
+
+			$.ajax({
+				url: 'cereus_ipam_scan.php',
+				type: 'POST',
+				data: { action: 'force_clear', subnet_id: sid, __csrf_magic: csrfMagicToken },
+				dataType: 'json',
+				timeout: 10000,
+				success: function(data) {
+					scanRunning = false;
+					stopProgress();
+					$('#scan_live_container').hide();
+					$('#btn_stop').hide();
+					$('#btn_force_clear').hide();
+					$('#btn_scan').prop('disabled', false).val('<?php print __esc('Ping Scan', 'cereus_ipam'); ?>');
+					$('#btn_arp_scan').prop('disabled', false);
+					$('#scan_status').html('<span style="color:#4CAF50;"><?php print __esc('Stale scan cleared. You can start a new scan.', 'cereus_ipam'); ?></span>');
+				}
+			});
 		});
 
 		$('#btn_arp_scan').click(function() {
@@ -588,9 +1026,46 @@ function cereus_ipam_scan_page() {
 		$('#btn_apply').click(function() {
 			document.location = 'cereus_ipam_scan.php?action=apply_results&subnet_id=' + $('#subnet_id').val();
 		});
+
+		/* On page load: resume running scan UI or show persisted dashboard */
+		var initialScanRunning = <?php print ($scan_running_on_load ? 'true' : 'false'); ?>;
+		var initialSubnetId = <?php print ($subnet_id ? (int) $subnet_id : '0'); ?>;
+
+		if (initialScanRunning && initialSubnetId) {
+			/* A scan is in progress — enter scanning state */
+			scanRunning = true;
+			scanStartTime = Date.now() - 10000; /* pretend started 10s ago to skip race guard */
+			$('#scan_summary_container').hide().empty();
+			$('#scan_live_container').show();
+			$('#btn_stop').show();
+			$('#btn_force_clear').show(); /* Always show force-clear when resuming a running scan */
+			$('#btn_scan').prop('disabled', true).val('<?php print __esc('Scanning...', 'cereus_ipam'); ?>');
+			$('#btn_arp_scan').prop('disabled', true);
+			$('#scan_status').html('<i><i class="fa fa-spinner fa-spin"></i> <?php print __esc('Scan in progress...', 'cereus_ipam'); ?></i>');
+			startProgress(initialSubnetId);
+		} else if (typeof window._initialScanData !== 'undefined' && window._initialScanData) {
+			/* Show persisted scan results dashboard */
+			showScanDashboard(window._initialScanData);
+		}
 	});
 	</script>
 	<?php
+
+	/* Inject persisted scan result for dashboard display on page load */
+	if ($subnet_id > 0 && !$scan_running_on_load) {
+		$saved_json = read_config_option('cereus_ipam_scan_result_' . $subnet_id);
+		if (!empty($saved_json)) {
+			$saved_data = json_decode($saved_json, true);
+			if (is_array($saved_data) && (($saved_data['total_scanned'] ?? 0) > 0 || ($saved_data['alive_count'] ?? 0) > 0)) {
+				$sub_info = db_fetch_row_prepared("SELECT subnet, mask FROM plugin_cereus_ipam_subnets WHERE id = ?", array($subnet_id));
+				if (cacti_sizeof($sub_info)) {
+					$saved_data['subnet'] = $sub_info['subnet'] . '/' . $sub_info['mask'];
+				}
+				print '<script type="text/javascript">window._initialScanData = '
+					. json_encode($saved_data, JSON_HEX_TAG | JSON_HEX_AMP) . ";</script>\n";
+			}
+		}
+	}
 
 	/* Show scan results if a subnet is selected */
 	if ($subnet_id > 0) {
@@ -663,10 +1138,27 @@ function cereus_ipam_scan_results_table($subnet_id) {
 		LIMIT $offset, $rows",
 		$sql_params);
 
+	/* Determine which scan method produced these results */
+	$last_scan_type = db_fetch_cell_prepared(
+		"SELECT scan_type FROM plugin_cereus_ipam_scan_results WHERE subnet_id = ? ORDER BY id DESC LIMIT 1",
+		array($subnet_id));
+
+	$scan_type_labels = array(
+		'ping' => __('Ping', 'cereus_ipam'),
+		'nmap' => 'Nmap',
+		'arp'  => __('ARP', 'cereus_ipam'),
+		'snmp' => 'SNMP',
+		'dns'  => 'DNS',
+	);
+	$scan_type_label = isset($scan_type_labels[$last_scan_type]) ? $scan_type_labels[$last_scan_type] : '';
+
 	/* Title */
 	$title = __('Scan Results for %s/%s', html_escape($subnet_info['subnet']), $subnet_info['mask'], 'cereus_ipam');
 	if (!empty($subnet_info['last_scanned'])) {
 		$title .= ' - ' . __('Last scan: %s', $subnet_info['last_scanned'], 'cereus_ipam');
+	}
+	if (!empty($scan_type_label)) {
+		$title .= ' [' . $scan_type_label . ']';
 	}
 	$title .= ' (' . __('%d alive, %d no response', $alive_count, $dead_count, 'cereus_ipam') . ')';
 

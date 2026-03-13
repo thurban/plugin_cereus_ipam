@@ -1,12 +1,17 @@
 No known issues.
 
-Fixed in v1.5.0:
-- Device list disappeared from Management > Devices when plugin was installed
-- Scan results pagination was stuck on page 1
-- Show/hide "No Response" checkbox had no effect
-- Large scan result sets could lock up the browser (now server-side paginated)
+Fixed in v1.6.0:
+- Nmap scans appeared stuck (progress showed alive count instead of total scanned)
+- Scan completion not detected in the UI for fast-finishing scans
+- Live scan feed flooded with hundreds of "no response" entries from nmap
+- Crashed or stale scans could block future scans indefinitely
+- Missing tenant_id column on sections table for existing installs
+- DHCP scope monitoring crash (missing SNMP library)
+- License check redeclare fatal error
 
-New in v1.5.0:
-- Live scrolling scan feed with real-time IP status display
-- Stop scan button to cancel running scans
-- Server-side pagination and filtering for scan results
+New in v1.6.0:
+- Nmap scan method (-sn ping scan) for high-confidence host discovery
+- Dashboard-style visual scan results with stat cards and method details
+- Running scan detection on page load
+- Force clear button for stuck/crashed scans
+- Deferred conflict detection (non-blocking scan results display)

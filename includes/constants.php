@@ -24,6 +24,7 @@ define('CEREUS_IPAM_SCAN_PING', 'ping');
 define('CEREUS_IPAM_SCAN_ARP',  'arp');
 define('CEREUS_IPAM_SCAN_SNMP', 'snmp');
 define('CEREUS_IPAM_SCAN_DNS',  'dns');
+define('CEREUS_IPAM_SCAN_NMAP', 'nmap');
 
 /* Changelog Actions */
 define('CEREUS_IPAM_ACTION_CREATE',   'create');
@@ -71,6 +72,7 @@ $cereus_ipam_scan_types = array(
 	CEREUS_IPAM_SCAN_ARP  => __('ARP Table (SNMP)', 'cereus_ipam'),
 	CEREUS_IPAM_SCAN_SNMP => __('SNMP Discovery', 'cereus_ipam'),
 	CEREUS_IPAM_SCAN_DNS  => __('DNS Lookup', 'cereus_ipam'),
+	CEREUS_IPAM_SCAN_NMAP => __('Nmap Scan', 'cereus_ipam'),
 );
 
 $cereus_ipam_cf_types = array(

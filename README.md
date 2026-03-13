@@ -27,8 +27,9 @@ A ground-up rewrite of the legacy nmidPhpip plugin, built with modern security p
 - **Visual Network Map** — interactive d3.js tile map with /24 block overview, per-IP color grid, and drill-down
 - VLAN management with subnet-to-VLAN mapping
 - VRF support for overlapping address spaces
-- Network scanning: fping (poller), native ICMP ping, and parallel TCP probing (web) — supports /16 and larger subnets with chunked processing
-- Live scan feed with real-time IP status display, stop scan capability, and server-side paginated results
+- Network scanning: fping, nmap (-sn ping scan), native ICMP ping, and parallel TCP probing — supports /16 and larger subnets with chunked processing
+- Dashboard-style scan results with stat cards, progress bars, and method/command details
+- Live scan feed with real-time IP status display, stop scan, crash recovery, and server-side paginated results
 - ARP table scanning via SNMP discovery
 - DNS integration (forward/reverse lookups)
 - Custom fields (text, textarea, dropdown, checkbox, date, URL)
@@ -69,6 +70,8 @@ A ground-up rewrite of the legacy nmidPhpip plugin, built with modern security p
 - GMP PHP extension (required for IPv4/IPv6 calculations)
 - MySQL/MariaDB with InnoDB support
 - Optional: PHP sockets extension (for TCP network scanning)
+- Optional: nmap (for nmap `-sn` ping scan method)
+- Optional: fping (for fping scan method)
 - Optional: Cereus License Manager plugin (for Professional/Enterprise features)
 - Optional: Cereus REST API plugin (for REST API endpoints)
 

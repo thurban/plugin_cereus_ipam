@@ -14,6 +14,9 @@
  * @return bool
  */
 function cereus_ipam_scan_is_stopped($subnet_id) {
+	/* Update heartbeat so the UI can detect stale/crashed scans */
+	set_config_option('cereus_ipam_scan_heartbeat_' . $subnet_id, time());
+
 	$stop = db_fetch_cell_prepared("SELECT value FROM settings WHERE name = ?",
 		array('cereus_ipam_scan_stop_' . $subnet_id));
 
@@ -40,6 +43,10 @@ function cereus_ipam_scan_get_method() {
 
 	if ($configured === 'tcp') {
 		return 'tcp';
+	}
+
+	if ($configured === 'nmap') {
+		return 'nmap';
 	}
 
 	/* auto: fping from CLI/poller (runs as root, no SELinux httpd_t),
@@ -234,6 +241,17 @@ function cereus_ipam_scan_ping($subnet_id) {
 		return cereus_ipam_scan_ping_native($subnet_id, $subnet);
 	}
 
+	if ($method === 'nmap') {
+		$nmap_path = cereus_ipam_scan_find_nmap();
+
+		if (!empty($nmap_path)) {
+			return cereus_ipam_scan_nmap($subnet_id, $subnet, $nmap_path);
+		}
+
+		/* nmap not found, fall through to TCP */
+		cacti_log('CEREUS IPAM: nmap binary not found, falling back to TCP scan', false, 'PLUGIN');
+	}
+
 	return cereus_ipam_scan_tcp_parallel($subnet_id, $subnet);
 }
 
@@ -255,6 +273,7 @@ function cereus_ipam_scan_fping($subnet_id, $subnet, $fping_path, $cidr) {
 
 	$alive = array();
 	$now = date('Y-m-d H:i:s');
+	$scan_start = microtime(true);
 
 	/* For small subnets (/24 or smaller), run fping in a single call.
 	 * For larger subnets, chunk into /24 blocks to keep fping responsive
@@ -301,23 +320,31 @@ function cereus_ipam_scan_fping($subnet_id, $subnet, $fping_path, $cidr) {
 			$is_windows, $subnet_id, $now);
 	}
 
+	$elapsed = round(microtime(true) - $scan_start, 2);
 	$stopped = cereus_ipam_scan_is_stopped($subnet_id);
+	$total_scanned = (int) db_fetch_cell_prepared("SELECT COUNT(*) FROM plugin_cereus_ipam_scan_results WHERE subnet_id = ? AND scanned_at = ?", array($subnet_id, $now));
 
 	/* Update subnet last_scanned */
 	db_execute_prepared("UPDATE plugin_cereus_ipam_subnets SET last_scanned = NOW() WHERE id = ?", array($subnet_id));
 
-	/* Run conflict detection after scan */
-	if (!$stopped) {
-		cereus_ipam_post_scan_conflict_check($subnet_id);
+	/* Full command as executed (for copy-paste into CLI) */
+	$display_cmd = cacti_escapeshellcmd($fping_path) . ' -g -r 1 -t ' . (int) $timeout
+		. ' ' . cacti_escapeshellarg($cidr);
+	if (!$is_windows) {
+		$display_cmd .= ' 2>&1';
 	}
 
 	return array(
-		'success'     => true,
-		'stopped'     => $stopped,
-		'alive_count' => count($alive),
-		'alive_ips'   => $alive,
-		'subnet'      => $cidr,
-		'method'      => 'fping',
+		'success'       => true,
+		'stopped'       => $stopped,
+		'alive_count'   => count($alive),
+		'dead_count'    => $total_scanned - count($alive),
+		'total_scanned' => $total_scanned,
+		'alive_ips'     => $alive,
+		'subnet'        => $cidr,
+		'method'        => 'fping',
+		'command'       => $display_cmd,
+		'elapsed'       => $elapsed,
 	);
 }
 
@@ -416,6 +443,419 @@ function cereus_ipam_fping_exec($cmd, $subnet_id, $now) {
 	}
 
 	return $alive;
+}
+
+/* ==================== Nmap Sweep ==================== */
+
+/**
+ * Locate the nmap binary.
+ *
+ * @return string path or empty string
+ */
+function cereus_ipam_scan_find_nmap() {
+	global $config;
+
+	$configured = read_config_option('cereus_ipam_nmap_path');
+
+	if (!empty($configured) && is_executable($configured)) {
+		return $configured;
+	}
+
+	if (isset($config['cacti_server_os']) && $config['cacti_server_os'] == 'win32') {
+		$candidates = array(
+			'C:\\Program Files (x86)\\Nmap\\nmap.exe',
+			'C:\\Program Files\\Nmap\\nmap.exe',
+			'C:\\nmap\\nmap.exe',
+		);
+
+		$path_dirs = explode(';', getenv('PATH'));
+
+		foreach ($path_dirs as $dir) {
+			$dir = rtrim($dir, '\\');
+
+			if (!empty($dir)) {
+				$candidates[] = $dir . '\\nmap.exe';
+			}
+		}
+	} else {
+		$candidates = array('/usr/bin/nmap', '/usr/local/bin/nmap', '/usr/sbin/nmap');
+	}
+
+	foreach ($candidates as $path) {
+		if (is_executable($path)) {
+			return $path;
+		}
+	}
+
+	return '';
+}
+
+/**
+ * Subnet sweep using nmap -sn (ping scan / host discovery).
+ *
+ * nmap combines ICMP echo, ICMP timestamp, TCP SYN:443 and TCP ACK:80
+ * for high-confidence host detection. Output is parsed from XML (-oX -).
+ *
+ * For subnets larger than /24, scans are run in /24-sized chunks.
+ *
+ * @param int    $subnet_id
+ * @param array  $subnet
+ * @param string $nmap_path
+ * @return array
+ */
+function cereus_ipam_scan_nmap($subnet_id, $subnet, $nmap_path) {
+	global $config;
+
+	$mask    = (int) $subnet['mask'];
+	$version = cereus_ipam_ip_version($subnet['subnet']);
+	$timeout = cereus_ipam_scan_get_timeout();
+	$is_windows = (isset($config['cacti_server_os']) && $config['cacti_server_os'] == 'win32');
+	$cidr    = $subnet['subnet'] . '/' . $subnet['mask'];
+
+	$alive = array();
+	$now   = date('Y-m-d H:i:s');
+	$scan_start = microtime(true);
+	$last_rc = 0;
+	$last_stderr = '';
+	$total_scanned = 0;
+
+	/* For subnets larger than /24, chunk into /24 blocks */
+	if ($version == 4 && $mask < 24) {
+		$range = cereus_ipam_cidr_to_range($subnet['subnet'], $mask);
+		$start = cereus_ipam_ip_to_gmp($range['first']);
+		$end   = cereus_ipam_ip_to_gmp($range['last']);
+
+		$chunk_start = $start;
+		$chunk_count = 0;
+
+		while (gmp_cmp($chunk_start, $end) <= 0) {
+			$chunk_end = gmp_add($chunk_start, 255);
+
+			if (gmp_cmp($chunk_end, $end) > 0) {
+				$chunk_end = $end;
+			}
+
+			if (++$chunk_count % 4 === 0) {
+				set_config_option('cereus_ipam_scan_active_' . $subnet_id, time());
+			}
+
+			if (cereus_ipam_scan_is_stopped($subnet_id)) {
+				break;
+			}
+
+			$first_ip = cereus_ipam_gmp_to_ip($chunk_start, $version);
+			$last_ip  = cereus_ipam_gmp_to_ip($chunk_end, $version);
+
+			/* Build nmap target: use range notation within same /24 */
+			$target = cereus_ipam_nmap_target($first_ip, $last_ip, $version);
+
+			$chunk_result = cereus_ipam_nmap_exec($nmap_path, $target,
+				$timeout, $is_windows, $version, $subnet_id, $now);
+
+			$alive = array_merge($alive, $chunk_result['alive']);
+			$total_scanned += $chunk_result['scanned'];
+			$last_rc = $chunk_result['rc'];
+			if (!empty($chunk_result['stderr'])) {
+				$last_stderr = $chunk_result['stderr'];
+			}
+
+			/* Insert DB records for down hosts in this chunk so the
+			 * progress poller (which counts DB rows) shows accurate progress.
+			 * nmap -sn only reports UP hosts in <host> elements. */
+			$chunk_alive_set = isset($chunk_result['alive_set']) ? $chunk_result['alive_set'] : array();
+			cereus_ipam_nmap_insert_down_hosts($subnet_id, $chunk_start, $chunk_end, $version, $chunk_alive_set, $now);
+
+			$chunk_start = gmp_add($chunk_end, 1);
+		}
+	} else {
+		/* /24 or smaller, or IPv6: single nmap call */
+		$exec_result = cereus_ipam_nmap_exec($nmap_path, $cidr,
+			$timeout, $is_windows, $version, $subnet_id, $now);
+
+		$alive = $exec_result['alive'];
+		$total_scanned = $exec_result['scanned'];
+		$last_rc = $exec_result['rc'];
+		$last_stderr = $exec_result['stderr'];
+
+		/* Insert DB records for down hosts so progress tracking works */
+		$range = cereus_ipam_cidr_to_range($subnet['subnet'], $mask);
+		$range_start = cereus_ipam_ip_to_gmp($range['first']);
+		$range_end   = cereus_ipam_ip_to_gmp($range['last']);
+		$alive_set = isset($exec_result['alive_set']) ? $exec_result['alive_set'] : array();
+		cereus_ipam_nmap_insert_down_hosts($subnet_id, $range_start, $range_end, $version, $alive_set, $now);
+	}
+
+	$elapsed = round(microtime(true) - $scan_start, 2);
+
+	$stopped = cereus_ipam_scan_is_stopped($subnet_id);
+
+	db_execute_prepared("UPDATE plugin_cereus_ipam_subnets SET last_scanned = NOW() WHERE id = ?",
+		array($subnet_id));
+
+	/* Full command as executed (for copy-paste into CLI) */
+	$timeout_sec = max(1, (int) ceil($timeout / 1000));
+	$display_cmd = cacti_escapeshellcmd($nmap_path)
+		. ' -sn -oX - --no-stylesheet'
+		. ' --host-timeout ' . $timeout_sec . 's'
+		. ' -T4';
+	if ($version == 6) {
+		$display_cmd .= ' -6';
+	}
+	$display_cmd .= ' ' . cacti_escapeshellarg($cidr);
+	if (!$is_windows) {
+		$display_cmd .= ' 2>/dev/null';
+	}
+
+	return array(
+		'success'      => ($last_rc === 0),
+		'stopped'      => $stopped,
+		'alive_count'  => count($alive),
+		'dead_count'   => $total_scanned - count($alive),
+		'total_scanned' => $total_scanned,
+		'alive_ips'    => $alive,
+		'subnet'       => $cidr,
+		'method'       => 'nmap',
+		'command'      => $display_cmd,
+		'elapsed'      => $elapsed,
+		'exit_code'    => $last_rc,
+		'stderr'       => $last_stderr,
+	);
+}
+
+/**
+ * Build nmap target string for a chunk of IPs.
+ *
+ * Uses nmap range notation (e.g. 10.0.1.0-255) when both IPs share
+ * the first three octets. Otherwise falls back to first-last range.
+ *
+ * @param string $first_ip
+ * @param string $last_ip
+ * @param int    $version  IP version (4 or 6)
+ * @return string
+ */
+function cereus_ipam_nmap_target($first_ip, $last_ip, $version) {
+	if ($version == 6) {
+		return $first_ip . '-' . $last_ip;
+	}
+
+	$f = explode('.', $first_ip);
+	$l = explode('.', $last_ip);
+
+	if ($f[0] === $l[0] && $f[1] === $l[1] && $f[2] === $l[2]) {
+		/* Same /24 — use nmap range notation: 10.0.1.0-255 */
+		return $first_ip . '-' . $l[3];
+	}
+
+	return $first_ip . '-' . $last_ip;
+}
+
+/**
+ * Execute nmap -sn and parse XML output.
+ *
+ * @param string $nmap_path  Path to nmap binary
+ * @param string $target     CIDR or range notation target
+ * @param int    $timeout    Timeout in milliseconds
+ * @param bool   $is_windows Running on Windows
+ * @param int    $version    IP version (4 or 6)
+ * @param int    $subnet_id
+ * @param string $now        Timestamp for scan results
+ * @return array of alive IP strings
+ */
+function cereus_ipam_nmap_exec($nmap_path, $target, $timeout, $is_windows, $version, $subnet_id, $now) {
+	$alive = array();
+
+	$timeout_sec = max(1, (int) ceil($timeout / 1000));
+
+	$cmd = cacti_escapeshellcmd($nmap_path)
+		. ' -sn -oX - --no-stylesheet'
+		. ' --host-timeout ' . $timeout_sec . 's'
+		. ' -T4';
+
+	if ($version == 6) {
+		$cmd .= ' -6';
+	}
+
+	$cmd .= ' ' . cacti_escapeshellarg($target);
+
+	/* Capture stderr for error reporting */
+	$stderr_file = tempnam(sys_get_temp_dir(), 'nmap_err_');
+	$cmd .= ' 2>' . ($is_windows ? '' : '') . cacti_escapeshellarg($stderr_file);
+
+	$output = array();
+	exec($cmd, $output, $rc);
+	$xml_str = implode("\n", $output);
+
+	$stderr = '';
+	if (file_exists($stderr_file)) {
+		$stderr = trim(file_get_contents($stderr_file));
+		@unlink($stderr_file);
+	}
+
+	/* Parse XML output */
+	libxml_use_internal_errors(true);
+	$xml = @simplexml_load_string($xml_str);
+
+	if ($xml === false) {
+		cacti_log('CEREUS IPAM: nmap XML parse failed for target ' . $target, false, 'PLUGIN');
+		return array('alive' => $alive, 'scanned' => 0, 'rc' => $rc, 'stderr' => $stderr ?: 'XML parse failed');
+	}
+
+	/* Parse <runstats><hosts up="N" down="N" total="N"/> to get the REAL
+	 * total scanned count.  nmap -sn only emits <host> elements for UP
+	 * hosts, so counting those would report scanned = alive, breaking
+	 * progress tracking (e.g. 10/254 = 4% instead of 254/254 = 100%). */
+	$runstats_total = 0;
+	if (isset($xml->runstats->hosts)) {
+		$runstats_total = (int) $xml->runstats->hosts['total'];
+	}
+
+	/* Collect alive IPs from <host> elements (nmap only reports UP hosts) */
+	$alive_set = array();
+
+	if (isset($xml->host)) {
+		foreach ($xml->host as $host) {
+			$ip       = '';
+			$mac      = '';
+			$hostname = '';
+			$is_alive = false;
+
+			/* Get status */
+			if (isset($host->status)) {
+				$is_alive = ((string) $host->status['state'] === 'up');
+			}
+
+			/* Get IP and MAC addresses */
+			if (isset($host->address)) {
+				foreach ($host->address as $addr) {
+					$addrtype = (string) $addr['addrtype'];
+
+					if ($addrtype === 'ipv4' || $addrtype === 'ipv6') {
+						$ip = (string) $addr['addr'];
+					} elseif ($addrtype === 'mac') {
+						$mac = strtoupper((string) $addr['addr']);
+					}
+				}
+			}
+
+			/* Get hostname from nmap reverse DNS */
+			if (isset($host->hostnames->hostname)) {
+				foreach ($host->hostnames->hostname as $hn) {
+					if ((string) $hn['type'] === 'PTR') {
+						$hostname = (string) $hn['name'];
+						break;
+					}
+				}
+			}
+
+			if (empty($ip) || !cereus_ipam_validate_ip($ip)) {
+				continue;
+			}
+
+			if ($is_alive) {
+				$alive[] = $ip;
+				$alive_set[$ip] = true;
+			}
+
+			/* Store scan result for alive host */
+			if (!empty($mac)) {
+				db_execute_prepared("INSERT INTO plugin_cereus_ipam_scan_results
+					(subnet_id, ip, is_alive, mac_address, scan_type, scanned_at)
+					VALUES (?, ?, ?, ?, 'nmap', ?)",
+					array($subnet_id, $ip, $is_alive ? 1 : 0, $mac, $now));
+			} else {
+				db_execute_prepared("INSERT INTO plugin_cereus_ipam_scan_results
+					(subnet_id, ip, is_alive, scan_type, scanned_at)
+					VALUES (?, ?, ?, 'nmap', ?)",
+					array($subnet_id, $ip, $is_alive ? 1 : 0, $now));
+			}
+
+			/* Store hostname from nmap PTR (no PHP gethostbyaddr fallback —
+			 * nmap already does PTR lookups and the PHP fallback blocks for
+			 * 5-30 seconds per host on DNS timeout, killing scan performance) */
+			if ($is_alive && !empty($hostname)) {
+				db_execute_prepared("UPDATE plugin_cereus_ipam_scan_results
+					SET hostname = ? WHERE subnet_id = ? AND ip = ? AND scanned_at = ?",
+					array($hostname, $subnet_id, $ip, $now));
+			}
+		}
+	}
+
+	/* Use runstats total (accurate) or fall back to alive count */
+	$scanned = ($runstats_total > 0) ? $runstats_total : count($alive);
+
+	return array('alive' => $alive, 'scanned' => $scanned, 'alive_set' => $alive_set, 'rc' => $rc, 'stderr' => $stderr);
+}
+
+/**
+ * Insert scan_results rows for hosts that nmap reported as down.
+ *
+ * nmap -sn only emits <host> elements for UP hosts, so the progress
+ * poller (which counts DB rows) would show e.g. 10/254 = 4% instead
+ * of 254/254 = 100%.  This function enumerates all IPs in the given
+ * GMP range, skips those in the alive set, and batch-inserts "down"
+ * records so the row count reflects the true number of hosts scanned.
+ *
+ * @param int      $subnet_id
+ * @param resource $range_start  GMP start of IP range
+ * @param resource $range_end    GMP end of IP range
+ * @param int      $version      IP version (4 or 6)
+ * @param array    $alive_set    Associative array of alive IPs (ip => true)
+ * @param string   $now          Timestamp for scan results
+ */
+function cereus_ipam_nmap_insert_down_hosts($subnet_id, $range_start, $range_end, $version, $alive_set, $now) {
+	/* Enumerate ALL IPs in the range (including network/broadcast) because
+	 * nmap scans them and counts them in runstats, and the progress poller's
+	 * total (from cereus_ipam_subnet_size) also includes them. */
+	$batch = array();
+	$batch_size = 100;
+	$current = $range_start;
+
+	while (gmp_cmp($current, $range_end) <= 0) {
+		$ip = cereus_ipam_gmp_to_ip($current, $version);
+
+		if (!isset($alive_set[$ip])) {
+			$batch[] = array($subnet_id, $ip, 0, 'nmap', $now);
+		}
+
+		if (count($batch) >= $batch_size) {
+			cereus_ipam_nmap_flush_down_batch($batch);
+			$batch = array();
+		}
+
+		$current = gmp_add($current, 1);
+	}
+
+	if (!empty($batch)) {
+		cereus_ipam_nmap_flush_down_batch($batch);
+	}
+}
+
+/**
+ * Batch-insert "down" scan result rows.
+ *
+ * @param array $batch  Array of [subnet_id, ip, is_alive, scan_type, scanned_at]
+ */
+function cereus_ipam_nmap_flush_down_batch($batch) {
+	if (empty($batch)) {
+		return;
+	}
+
+	$sql = "INSERT INTO plugin_cereus_ipam_scan_results
+		(subnet_id, ip, is_alive, scan_type, scanned_at) VALUES ";
+	$parts  = array();
+	$params = array();
+
+	foreach ($batch as $row) {
+		$parts[]  = '(?, ?, ?, ?, ?)';
+		$params[] = $row[0]; // subnet_id
+		$params[] = $row[1]; // ip
+		$params[] = $row[2]; // is_alive
+		$params[] = $row[3]; // scan_type
+		$params[] = $row[4]; // scanned_at
+	}
+
+	$sql .= implode(', ', $parts);
+	db_execute_prepared($sql, $params);
 }
 
 /**
@@ -574,11 +1014,6 @@ function cereus_ipam_scan_ping_native($subnet_id, $subnet) {
 	/* Update subnet last_scanned */
 	db_execute_prepared("UPDATE plugin_cereus_ipam_subnets SET last_scanned = NOW() WHERE id = ?", array($subnet_id));
 
-	/* Run conflict detection after scan */
-	if (!$stopped) {
-		cereus_ipam_post_scan_conflict_check($subnet_id);
-	}
-
 	return array(
 		'success'     => true,
 		'stopped'     => $stopped,
@@ -709,11 +1144,6 @@ function cereus_ipam_scan_tcp_parallel($subnet_id, $subnet) {
 
 	/* Update subnet last_scanned */
 	db_execute_prepared("UPDATE plugin_cereus_ipam_subnets SET last_scanned = NOW() WHERE id = ?", array($subnet_id));
-
-	/* Run conflict detection after scan */
-	if (!$stopped) {
-		cereus_ipam_post_scan_conflict_check($subnet_id);
-	}
 
 	return array(
 		'success'     => true,
@@ -1364,9 +1794,20 @@ function cereus_ipam_run_scheduled_scans() {
 		return;
 	}
 
+	/* Check global scheduled scan enable setting */
+	if (read_config_option('cereus_ipam_scan_enabled') != 'on') {
+		return;
+	}
+
+	$max_concurrent = (int) read_config_option('cereus_ipam_scan_concurrent');
+	if ($max_concurrent < 1) {
+		$max_concurrent = 5;
+	}
+
 	$subnets = db_fetch_assoc("SELECT * FROM plugin_cereus_ipam_subnets
 		WHERE scan_enabled = 1
-		AND (last_scanned IS NULL OR UNIX_TIMESTAMP(NOW()) - UNIX_TIMESTAMP(last_scanned) >= scan_interval)");
+		AND (last_scanned IS NULL OR UNIX_TIMESTAMP(NOW()) - UNIX_TIMESTAMP(last_scanned) >= scan_interval)
+		LIMIT " . $max_concurrent);
 
 	if (!cacti_sizeof($subnets)) {
 		return;
@@ -1376,6 +1817,8 @@ function cereus_ipam_run_scheduled_scans() {
 		if (function_exists('cereus_ipam_should_suppress_scan') && cereus_ipam_should_suppress_scan($subnet['id'])) {
 			continue;
 		}
+
+		cacti_log('CEREUS IPAM: Scheduled scan starting for subnet ' . $subnet['subnet'] . '/' . $subnet['mask'] . ' (ID: ' . $subnet['id'] . ')', false, 'PLUGIN');
 
 		cereus_ipam_scan_ping($subnet['id']);
 	}

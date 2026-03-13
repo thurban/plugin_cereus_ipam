@@ -237,7 +237,7 @@ function cereus_ipam_setup_tables() {
 		is_alive   TINYINT(1) NOT NULL DEFAULT 0,
 		hostname   VARCHAR(255) DEFAULT NULL,
 		mac_address VARCHAR(17) DEFAULT NULL,
-		scan_type  ENUM('ping','arp','snmp','dns') NOT NULL,
+		scan_type  ENUM('ping','arp','snmp','dns','nmap') NOT NULL,
 		scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		PRIMARY KEY (id),
 		KEY idx_subnet (subnet_id),
@@ -308,6 +308,12 @@ function cereus_ipam_setup_tables() {
 	$cols = db_fetch_assoc("SHOW COLUMNS FROM plugin_cereus_ipam_sections LIKE 'tenant_id'");
 	if (!cacti_sizeof($cols)) {
 		db_execute("ALTER TABLE plugin_cereus_ipam_sections ADD COLUMN tenant_id BIGINT UNSIGNED DEFAULT NULL AFTER parent_id, ADD KEY idx_tenant (tenant_id)");
+	}
+
+	/* Add 'nmap' to scan_type ENUM if not present (upgrade from <1.6) */
+	$col_info = db_fetch_row("SHOW COLUMNS FROM plugin_cereus_ipam_scan_results LIKE 'scan_type'");
+	if (cacti_sizeof($col_info) && strpos($col_info['Type'], 'nmap') === false) {
+		db_execute("ALTER TABLE plugin_cereus_ipam_scan_results MODIFY scan_type ENUM('ping','arp','snmp','dns','nmap') NOT NULL");
 	}
 
 	/* Add location_id to addresses if not exists */

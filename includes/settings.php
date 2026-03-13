@@ -63,6 +63,7 @@ function cereus_ipam_config_settings() {
 				'fping' => __('fping (requires raw socket capability)', 'cereus_ipam'),
 				'ping'  => __('Native Ping (ICMP via OS ping command)', 'cereus_ipam'),
 				'tcp'   => __('TCP Connect (works everywhere)', 'cereus_ipam'),
+				'nmap'  => __('Nmap (-sn ping scan, high confidence, requires nmap)', 'cereus_ipam'),
 			),
 		),
 		'cereus_ipam_fping_path' => array(
@@ -73,7 +74,15 @@ function cereus_ipam_config_settings() {
 			'max_length'    => 255,
 			'size'          => 40,
 		),
-		'cereus_ipam_scan_tcp_ports' => array(
+		'cereus_ipam_nmap_path' => array(
+		'friendly_name' => __('Nmap Path', 'cereus_ipam'),
+		'description'   => __('Path to the nmap binary. Leave empty for auto-detection. Linux: /usr/bin/nmap, Windows: C:\\Program Files (x86)\\Nmap\\nmap.exe', 'cereus_ipam'),
+		'method'        => 'textbox',
+		'default'       => '',
+		'max_length'    => 255,
+		'size'          => 40,
+	),
+	'cereus_ipam_scan_tcp_ports' => array(
 			'friendly_name' => __('TCP Probe Ports', 'cereus_ipam'),
 			'description'   => __('Comma-separated list of TCP ports to probe when using TCP scan method. Ports are tried in order; scanning stops at first alive response per host.', 'cereus_ipam'),
 			'method'        => 'textbox',

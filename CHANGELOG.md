@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.6.0] - 2026-03-13
+
+### Fixed
+- **Nmap scan completion detection** — nmap `-sn` only reports UP hosts in its XML `<host>` elements, so the scan appeared stuck at a low percentage (e.g. 10/254 = 4%) even after nmap finished; now parses `<runstats><hosts total="N"/>` for the correct count and inserts DB records for down hosts so progress tracking shows 100%
+- **Scan completion not detected by UI** — progress poller's 5-second race guard could prevent fast scans from being recognized as complete; now uses the persisted scan result as a definitive completion signal with no time guard needed
+- **Live scan feed flooded with "no response" entries** — nmap down-host records overwhelmed the feed; live feed now only shows alive hosts (server-side filtered), while stats bar still shows accurate totals
+- **Duplicate scan start possible** — server-side guard now rejects scan requests when one is already running for the same subnet
+- **Crashed scans block future scans** — added `register_shutdown_function()` to clear scan flags on fatal errors, plus heartbeat-based stale detection (2-minute timeout) with automatic cleanup
+- **Race window between result persist and flag clear** — scan result is now persisted BEFORE the active flag is cleared, preventing the progress poller from seeing an incomplete state
+- **Missing `tenant_id` column** — `plugin_cereus_ipam_sections.tenant_id` was not added on existing installs; setup.php migration now runs on plugin upgrade
+- **DHCP scope monitoring crash** — `cacti_snmp_get()` was called without loading the SNMP library first
+- **License check redeclare error** — added include guard to `license_check.php` to prevent "Cannot redeclare" fatal errors
+
+### Added
+- **Nmap scan method** — new `-sn` ping scan option using nmap for high-confidence host discovery; auto-detects nmap binary, configurable path in settings
+- **Dashboard-style scan results** — visual summary with stat cards (alive, no response, total, duration), ratio progress bar, scan method/command details, and error reporting
+- **Running scan detection on page load** — Network Scan page detects if a scan is already in progress and auto-enters scanning state with progress polling
+- **Force clear stale scan** — manual "Clear Stale Scan" button to recover from stuck scan state
+- **Deferred conflict detection** — conflict check now runs after the HTTP response is flushed via `fastcgi_finish_request()`, so the scan result dashboard appears immediately
+- **Nmap settings** — configurable nmap binary path in IPAM settings tab
+
+### Changed
+- Scan progress poller uses `MAX(id)` for feed cursor advancement instead of iterating all rows
+- Nmap scan results include down hosts in the database for accurate progress tracking
+- `scanFinished()` is now idempotent — safe when both the POST response and progress poller trigger completion simultaneously
+
 ## [1.5.0] - 2026-03-13
 
 ### Fixed

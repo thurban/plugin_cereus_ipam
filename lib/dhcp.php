@@ -20,6 +20,12 @@
  * @return bool True on success, false on failure.
  */
 function cereus_ipam_dhcp_poll_scope($scope_id) {
+	global $config;
+
+	if (!function_exists('cacti_snmp_get')) {
+		include_once($config['library_path'] . '/snmp.php');
+	}
+
 	$scope = db_fetch_row_prepared("SELECT * FROM plugin_cereus_ipam_dhcp_scopes WHERE id = ?", array($scope_id));
 
 	if (!cacti_sizeof($scope)) {

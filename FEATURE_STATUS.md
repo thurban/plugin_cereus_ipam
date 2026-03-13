@@ -1,4 +1,4 @@
-# Cereus IPAM — Feature Status (v1.5.0)
+# Cereus IPAM — Feature Status (v1.6.0)
 
 ## Community Tier (Free)
 
@@ -27,9 +27,12 @@
 | Full IPv6 / Dual-Stack | DONE |
 | VLAN Management (CRUD, subnet mapping) | DONE |
 | VRF Management (CRUD, overlapping spaces) | DONE |
-| Network Scanning (fping + native ping + TCP parallel fallback) | DONE |
+| Network Scanning (fping + nmap + native ping + TCP parallel fallback) | DONE |
+| Nmap Scan Method (-sn ping scan with runstats parsing) | DONE |
+| Dashboard-Style Scan Results (stat cards, ratio bar, method details) | DONE |
 | Live Scan Feed (real-time scrolling IP status display) | DONE |
 | Stop Scan (cancel running scans, partial results preserved) | DONE |
+| Crash Recovery (heartbeat stale detection, force clear, shutdown handler) | DONE |
 | Scan Results Pagination (server-side, large subnet support) | DONE |
 | ARP Table Scanning (SNMP discovery) | DONE |
 | DNS integration (forward/reverse lookup) | DONE |

@@ -7,6 +7,10 @@
  +-------------------------------------------------------------------------+
 */
 
+if (function_exists('cereus_ipam_license_tier')) {
+	return;
+}
+
 /**
  * Get current license tier for cereus_ipam.
  * Falls back to 'community' if cereus_license plugin is not installed.

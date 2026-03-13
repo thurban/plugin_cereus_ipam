@@ -153,6 +153,17 @@ function cereus_ipam_subnet_save() {
 	$vlan_id    = get_filter_request_var('vlan_id', FILTER_VALIDATE_INT);
 	$vrf_id     = get_filter_request_var('vrf_id', FILTER_VALIDATE_INT);
 
+	/* Scan scheduling (Professional+) */
+	$scan_enabled  = 0;
+	$scan_interval = 3600;
+	if (cereus_ipam_license_has_scanning()) {
+		$scan_enabled  = isset_request_var('scan_enabled') ? 1 : 0;
+		$scan_interval = get_filter_request_var('scan_interval', FILTER_VALIDATE_INT);
+		if ($scan_interval === false || $scan_interval < 60) {
+			$scan_interval = 3600;
+		}
+	}
+
 	if ($threshold === false || $threshold < 0 || $threshold > 100) {
 		$threshold = 90;
 	}
@@ -179,6 +190,7 @@ function cereus_ipam_subnet_save() {
 		'section_id' => $section_id, 'subnet' => $subnet, 'mask' => $mask,
 		'description' => $desc, 'gateway' => $gateway, 'nameservers' => $nameservers,
 		'threshold_pct' => $threshold, 'vlan_id' => $vlan_id, 'vrf_id' => $vrf_id,
+		'scan_enabled' => $scan_enabled, 'scan_interval' => $scan_interval,
 	);
 
 	/* Validate */
@@ -234,9 +246,9 @@ function cereus_ipam_subnet_save() {
 		db_execute_prepared("UPDATE plugin_cereus_ipam_subnets SET
 			section_id = ?, parent_id = ?, subnet = ?, mask = ?, description = ?,
 			gateway = ?, nameservers = ?, threshold_pct = ?,
-			vlan_id = ?, vrf_id = ?
+			vlan_id = ?, vrf_id = ?, scan_enabled = ?, scan_interval = ?
 			WHERE id = ?",
-			array($section_id, $parent_id, $subnet, $mask, $desc, $gateway, $nameservers, $threshold, $vlan_id, $vrf_id, $id));
+			array($section_id, $parent_id, $subnet, $mask, $desc, $gateway, $nameservers, $threshold, $vlan_id, $vrf_id, $scan_enabled, $scan_interval, $id));
 		cereus_ipam_changelog_record('update', 'subnet', $id, $old, array('subnet' => $subnet, 'mask' => $mask));
 		$new_id = $id;
 
@@ -244,9 +256,9 @@ function cereus_ipam_subnet_save() {
 		cereus_ipam_reparent_children($new_id, $subnet, $mask, $section_id);
 	} else {
 		db_execute_prepared("INSERT INTO plugin_cereus_ipam_subnets
-			(section_id, parent_id, subnet, mask, description, gateway, nameservers, threshold_pct, vlan_id, vrf_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			array($section_id, $parent_id, $subnet, $mask, $desc, $gateway, $nameservers, $threshold, $vlan_id, $vrf_id));
+			(section_id, parent_id, subnet, mask, description, gateway, nameservers, threshold_pct, vlan_id, vrf_id, scan_enabled, scan_interval)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			array($section_id, $parent_id, $subnet, $mask, $desc, $gateway, $nameservers, $threshold, $vlan_id, $vrf_id, $scan_enabled, $scan_interval));
 		$new_id = db_fetch_insert_id();
 		cereus_ipam_changelog_record('create', 'subnet', $new_id, null, array('subnet' => "$subnet/$mask"));
 
@@ -642,6 +654,41 @@ function cereus_ipam_subnet_edit() {
 		);
 	}
 
+	/* Scan scheduling (Professional+) */
+	if (cereus_ipam_license_has_scanning()) {
+		$scan_intervals = array(
+			300    => __('Every 5 minutes', 'cereus_ipam'),
+			600    => __('Every 10 minutes', 'cereus_ipam'),
+			900    => __('Every 15 minutes', 'cereus_ipam'),
+			1800   => __('Every 30 minutes', 'cereus_ipam'),
+			3600   => __('Every 1 hour', 'cereus_ipam'),
+			7200   => __('Every 2 hours', 'cereus_ipam'),
+			14400  => __('Every 4 hours', 'cereus_ipam'),
+			28800  => __('Every 8 hours', 'cereus_ipam'),
+			43200  => __('Every 12 hours', 'cereus_ipam'),
+			86400  => __('Every 24 hours', 'cereus_ipam'),
+			604800 => __('Every 7 days', 'cereus_ipam'),
+		);
+
+		$fields['scan_spacer'] = array(
+			'friendly_name' => __('Scan Schedule (Professional+)', 'cereus_ipam'),
+			'method'        => 'spacer',
+		);
+		$fields['scan_enabled'] = array(
+			'friendly_name' => __('Enable Scheduled Scanning', 'cereus_ipam'),
+			'description'   => __('Automatically scan this subnet on a recurring schedule via the Cacti poller.', 'cereus_ipam'),
+			'method'        => 'checkbox',
+			'value'         => $subnet['scan_enabled'] ?? '',
+		);
+		$fields['scan_interval'] = array(
+			'friendly_name' => __('Scan Interval', 'cereus_ipam'),
+			'description'   => __('How often to scan this subnet. The scan runs during the Cacti poller cycle following the interval.', 'cereus_ipam'),
+			'method'        => 'drop_array',
+			'value'         => $subnet['scan_interval'] ?? 3600,
+			'array'         => $scan_intervals,
+		);
+	}
+
 	/* Custom fields (Professional+) */
 	if (cereus_ipam_license_has_custom_fields()) {
 		$cf_values = json_decode($subnet['custom_fields'] ?? '{}', true);
@@ -709,6 +756,25 @@ function cereus_ipam_subnet_edit() {
 		print '<tr><td><b>' . __('Utilization:', 'cereus_ipam') . '</b></td><td>' . cereus_ipam_utilization_bar($util['pct']) . '</td></tr>';
 		if (!empty($subnet['last_scanned'])) {
 			print '<tr><td><b>' . __('Last Scanned:', 'cereus_ipam') . '</b></td><td>' . html_escape($subnet['last_scanned']) . '</td></tr>';
+		}
+		if (!empty($subnet['scan_enabled'])) {
+			$interval_secs = (int) ($subnet['scan_interval'] ?? 3600);
+			if ($interval_secs >= 86400) {
+				$interval_label = round($interval_secs / 86400) . ' ' . __('day(s)', 'cereus_ipam');
+			} elseif ($interval_secs >= 3600) {
+				$interval_label = round($interval_secs / 3600) . ' ' . __('hour(s)', 'cereus_ipam');
+			} else {
+				$interval_label = round($interval_secs / 60) . ' ' . __('minute(s)', 'cereus_ipam');
+			}
+			print '<tr><td><b>' . __('Scan Schedule:', 'cereus_ipam') . '</b></td><td><span style="color:#27ae60;">&#10003; ' . __('Every %s', $interval_label, 'cereus_ipam') . '</span></td></tr>';
+
+			if (!empty($subnet['last_scanned'])) {
+				$next_scan = strtotime($subnet['last_scanned']) + $interval_secs;
+				$next_label = ($next_scan <= time())
+					? __('Due now (next poller cycle)', 'cereus_ipam')
+					: date('Y-m-d H:i:s', $next_scan);
+				print '<tr><td><b>' . __('Next Scan:', 'cereus_ipam') . '</b></td><td>' . html_escape($next_label) . '</td></tr>';
+			}
 		}
 		print '</table>';
 		print '</td></tr>';
@@ -1214,6 +1280,9 @@ function cereus_ipam_list() {
 				}
 				if (cereus_ipam_license_has_scanning()) {
 					$actions_html .= '&nbsp;&nbsp;<a href="cereus_ipam_scan.php?subnet_id=' . $row['id'] . '" title="' . __esc('Scan Subnet', 'cereus_ipam') . '"><i class="fa fa-search"></i></a>';
+					if (!empty($row['scan_enabled'])) {
+						$actions_html .= '&nbsp;&nbsp;<span title="' . __esc('Scheduled scan enabled', 'cereus_ipam') . '" style="color:#27ae60;"><i class="fa fa-clock-o"></i></span>';
+					}
 				}
 				form_selectable_cell($actions_html, $row['id'], '', 'text-align:center;');
 
