@@ -1854,7 +1854,12 @@ function cereus_ipam_run_scheduled_scans() {
 
 		cacti_log('CEREUS IPAM: Scheduled scan starting for subnet ' . $subnet['subnet'] . '/' . $subnet['mask'] . ' (ID: ' . $subnet['id'] . ')', false, 'PLUGIN');
 
-		cereus_ipam_scan_ping($subnet['id']);
+		$result = cereus_ipam_scan_ping($subnet['id']);
+
+		/* Run conflict detection after scheduled scan */
+		if (($result['success'] ?? false) && !($result['stopped'] ?? false)) {
+			cereus_ipam_post_scan_conflict_check($subnet['id']);
+		}
 	}
 }
 

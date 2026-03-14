@@ -43,6 +43,9 @@ switch ($action) {
 	case 'force_clear':
 		cereus_ipam_force_clear_scan();
 		break;
+	case 'run_conflict_check':
+		cereus_ipam_run_conflict_check_action();
+		break;
 	default:
 		top_header();
 		cereus_ipam_scan_page();
@@ -182,24 +185,6 @@ function cereus_ipam_run_scan_action() {
 
 	header('Content-Type: application/json');
 	print json_encode($result, JSON_HEX_TAG | JSON_HEX_AMP);
-
-	/* Flush the HTTP response to the client, then run deferred tasks.
-	   This prevents slow conflict detection (DNS lookups) from blocking
-	   the scan result display in the browser. */
-	if (function_exists('fastcgi_finish_request')) {
-		fastcgi_finish_request();
-	} else {
-		if (ob_get_level()) {
-			ob_end_flush();
-		}
-		flush();
-	}
-
-	/* Deferred: conflict detection (contains slow gethostbyname() calls) */
-	if (!($result['stopped'] ?? false) && ($result['success'] ?? false)) {
-		cereus_ipam_post_scan_conflict_check($subnet_id);
-	}
-
 	exit;
 }
 
@@ -272,6 +257,37 @@ function cereus_ipam_force_clear_scan() {
 
 	header('Content-Type: application/json');
 	print json_encode(array('success' => true));
+	exit;
+}
+
+/* ==================== Run Conflict Check (AJAX, deferred) ==================== */
+
+function cereus_ipam_run_conflict_check_action() {
+	$subnet_id = get_filter_request_var('subnet_id', FILTER_VALIDATE_INT);
+
+	if (!$subnet_id) {
+		header('Content-Type: application/json');
+		print json_encode(array('success' => false, 'error' => 'Invalid subnet'));
+		exit;
+	}
+
+	/* Send response immediately, run detection in background */
+	header('Content-Type: application/json');
+	print json_encode(array('success' => true));
+
+	if (function_exists('fastcgi_finish_request')) {
+		fastcgi_finish_request();
+	} else {
+		if (ob_get_level()) {
+			ob_end_flush();
+		}
+		flush();
+	}
+
+	set_time_limit(0);
+	ignore_user_abort(true);
+
+	cereus_ipam_post_scan_conflict_check($subnet_id);
 	exit;
 }
 
@@ -411,7 +427,7 @@ function cereus_ipam_scan_page() {
 	$subnet_id = get_filter_request_var('subnet_id', FILTER_VALIDATE_INT);
 
 	/* Subnet selector */
-	$subnets = db_fetch_assoc("SELECT s.id, CONCAT(s.subnet, '/', s.mask) AS cidr, s.description, sec.name AS section_name
+	$subnets = db_fetch_assoc("SELECT s.id, CONCAT(s.subnet, '/', s.mask) AS cidr, s.description, s.scan_enabled, sec.name AS section_name
 		FROM plugin_cereus_ipam_subnets s
 		LEFT JOIN plugin_cereus_ipam_sections sec ON sec.id = s.section_id
 		ORDER BY s.subnet");
@@ -568,6 +584,14 @@ function cereus_ipam_scan_page() {
 			}
 			?>
 		};
+		var subnetScheduled = {
+			<?php
+			foreach ($subnets as $s) {
+				print "'" . (int) $s['id'] . "': " . ((int) $s['scan_enabled'] ? 'true' : 'false') . ",\n\t\t\t";
+			}
+			?>
+		};
+		var conflictAlertsEnabled = <?php print (read_config_option('cereus_ipam_conflict_alerts_enabled') == 'on') ? 'true' : 'false'; ?>;
 		var cmdTemplate = <?php print json_encode($cmd_preview); ?>;
 
 		var currentPreviewCidr = <?php print json_encode($preview_cidr); ?>;
@@ -879,6 +903,20 @@ function cereus_ipam_scan_page() {
 			$('#scan_status').html('');
 
 			showScanDashboard(data);
+
+			/* Run conflict detection if:
+			   - Conflict alerts are enabled globally
+			   - Subnet does NOT have scheduled scans (those run detection in the poller)
+			   - Scan was successful and not stopped */
+			if (conflictAlertsEnabled && !subnetScheduled[sid] && data && data.success !== false && !data.stopped) {
+				$.ajax({
+					url: 'cereus_ipam_scan.php',
+					type: 'POST',
+					data: { action: 'run_conflict_check', subnet_id: sid, __csrf_magic: csrfMagicToken },
+					dataType: 'json',
+					timeout: 60000
+				});
+			}
 
 			/* Reload the results table below */
 			loadPageNoHeader('cereus_ipam_scan.php?header=false&subnet_id=' + sid);
