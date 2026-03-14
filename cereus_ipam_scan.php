@@ -482,15 +482,23 @@ function cereus_ipam_scan_page() {
 						}
 					}
 
+					$is_windows = (isset($config['cacti_server_os']) && $config['cacti_server_os'] == 'win32');
+
 					if ($method === 'nmap') {
 						$ts = max(1, (int) ceil($timeout_val / 1000));
-						$cmd_preview = cacti_escapeshellcmd($binary_path)
+						$cmd_preview = cereus_ipam_escape_binary_path($binary_path)
 							. ' -sn -oX - --no-stylesheet --host-timeout ' . $ts . 's -T4 '
-							. cacti_escapeshellarg($preview_cidr) . ' 2>/dev/null';
+							. cacti_escapeshellarg($preview_cidr);
+						if (!$is_windows) {
+							$cmd_preview .= ' 2>/dev/null';
+						}
 					} else {
-						$cmd_preview = cacti_escapeshellcmd($binary_path)
+						$cmd_preview = cereus_ipam_escape_binary_path($binary_path)
 							. ' -g -r 1 -t ' . (int) $timeout_val . ' '
-							. cacti_escapeshellarg($preview_cidr) . ' 2>&1';
+							. cacti_escapeshellarg($preview_cidr);
+						if (!$is_windows) {
+							$cmd_preview .= ' 2>&1';
+						}
 					}
 				}
 

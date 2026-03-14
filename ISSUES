@@ -11,6 +11,7 @@ Fixed in v1.6.0:
 - License check redeclare fatal error
 - Subnet save crash on Windows/IIS ("Column 'parent_id' cannot be null")
 - Settings page crash when Thold plugin not installed (plugin_notification_lists table missing)
+- Scan command preview mangled on Windows (backslashes and parentheses stripped from paths)
 
 New in v1.6.0:
 - Nmap scan method (-sn ping scan) for high-confidence host discovery
