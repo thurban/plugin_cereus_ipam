@@ -15,6 +15,9 @@ function cereus_ipam_config_settings() {
 
 	$tier = cereus_ipam_license_tier();
 
+	/* Notification lists require thold plugin — check table exists */
+	$has_notify_lists = db_table_exists('plugin_notification_lists');
+
 	$tabs['cereus_ipam'] = __('IPAM', 'cereus_ipam');
 
 	$settings['cereus_ipam'] = array(
@@ -145,12 +148,18 @@ function cereus_ipam_config_settings() {
 			'max_length'    => 512,
 			'size'          => 60,
 		),
-		'cereus_ipam_threshold_notify_list' => array(
+		'cereus_ipam_threshold_notify_list' => $has_notify_lists ? array(
 			'friendly_name' => __('Threshold Notification List', 'cereus_ipam'),
 			'description'   => __('Select a Cacti notification list to receive threshold alerts (additive to manual recipients above).', 'cereus_ipam'),
 			'method'        => 'drop_sql',
 			'sql'           => "SELECT id, name FROM plugin_notification_lists ORDER BY name",
 			'none_value'    => 'None',
+			'default'       => '0',
+		) : array(
+			'friendly_name' => __('Threshold Notification List', 'cereus_ipam'),
+			'description'   => __('Requires the Thold plugin to be installed for notification list support.', 'cereus_ipam'),
+			'method'        => 'drop_array',
+			'array'         => array(0 => __('N/A - Thold not installed', 'cereus_ipam')),
 			'default'       => '0',
 		),
 		'cereus_ipam_threshold_cooldown' => array(
@@ -191,12 +200,18 @@ function cereus_ipam_config_settings() {
 			'max_length'    => 512,
 			'size'          => 60,
 		),
-		'cereus_ipam_conflict_notify_list' => array(
+		'cereus_ipam_conflict_notify_list' => $has_notify_lists ? array(
 			'friendly_name' => __('Conflict Notification List', 'cereus_ipam'),
 			'description'   => __('Select a Cacti notification list to receive conflict alerts (additive to manual recipients above).', 'cereus_ipam'),
 			'method'        => 'drop_sql',
 			'sql'           => "SELECT id, name FROM plugin_notification_lists ORDER BY name",
 			'none_value'    => 'None',
+			'default'       => '0',
+		) : array(
+			'friendly_name' => __('Conflict Notification List', 'cereus_ipam'),
+			'description'   => __('Requires the Thold plugin to be installed for notification list support.', 'cereus_ipam'),
+			'method'        => 'drop_array',
+			'array'         => array(0 => __('N/A - Thold not installed', 'cereus_ipam')),
 			'default'       => '0',
 		),
 		'cereus_ipam_report_header' => array(
@@ -229,12 +244,18 @@ function cereus_ipam_config_settings() {
 			'max_length'    => 512,
 			'size'          => 60,
 		),
-		'cereus_ipam_report_notify_list' => array(
+		'cereus_ipam_report_notify_list' => $has_notify_lists ? array(
 			'friendly_name' => __('Report Notification List', 'cereus_ipam'),
 			'description'   => __('Select a Cacti notification list to receive scheduled reports (additive to manual recipients above).', 'cereus_ipam'),
 			'method'        => 'drop_sql',
 			'sql'           => "SELECT id, name FROM plugin_notification_lists ORDER BY name",
 			'none_value'    => 'None',
+			'default'       => '0',
+		) : array(
+			'friendly_name' => __('Report Notification List', 'cereus_ipam'),
+			'description'   => __('Requires the Thold plugin to be installed for notification list support.', 'cereus_ipam'),
+			'method'        => 'drop_array',
+			'array'         => array(0 => __('N/A - Thold not installed', 'cereus_ipam')),
 			'default'       => '0',
 		),
 		'cereus_ipam_report_inc_utilization' => array(

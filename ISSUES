@@ -10,6 +10,7 @@ Fixed in v1.6.0:
 - DHCP scope monitoring crash (missing SNMP library)
 - License check redeclare fatal error
 - Subnet save crash on Windows/IIS ("Column 'parent_id' cannot be null")
+- Settings page crash when Thold plugin not installed (plugin_notification_lists table missing)
 
 New in v1.6.0:
 - Nmap scan method (-sn ping scan) for high-confidence host discovery

@@ -14,6 +14,7 @@
 - **DHCP scope monitoring crash** — `cacti_snmp_get()` was called without loading the SNMP library first
 - **License check redeclare error** — added include guard to `license_check.php` to prevent "Cannot redeclare" fatal errors
 - **Subnet save crash "Column 'parent_id' cannot be null"** — `get_filter_request_var()` can return `null` on Windows/IIS when the form field is absent; strict `=== false` check did not catch `null`, leading to a DB insert failure; guard now uses `empty()` to catch both `null` and `false`
+- **Settings page crash without Thold plugin** — notification list dropdowns used `drop_sql` querying `plugin_notification_lists` which only exists when the Thold plugin is installed; now checks `db_table_exists()` first and falls back to a disabled dropdown
 
 ### Added
 - **Nmap scan method** — new `-sn` ping scan option using nmap for high-confidence host discovery; auto-detects nmap binary, configurable path in settings
