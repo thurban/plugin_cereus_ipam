@@ -46,6 +46,9 @@ switch ($action) {
 	case 'run_conflict_check':
 		cereus_ipam_run_conflict_check_action();
 		break;
+	case 'results_table':
+		cereus_ipam_results_table_ajax();
+		break;
 	default:
 		top_header();
 		cereus_ipam_scan_page();
@@ -288,6 +291,20 @@ function cereus_ipam_run_conflict_check_action() {
 	ignore_user_abort(true);
 
 	cereus_ipam_post_scan_conflict_check($subnet_id);
+	exit;
+}
+
+/* ==================== Results Table (AJAX partial) ==================== */
+
+function cereus_ipam_results_table_ajax() {
+	$subnet_id = get_filter_request_var('subnet_id', FILTER_VALIDATE_INT);
+
+	if (!$subnet_id) {
+		print '';
+		exit;
+	}
+
+	cereus_ipam_scan_results_table($subnet_id);
 	exit;
 }
 
@@ -918,8 +935,10 @@ function cereus_ipam_scan_page() {
 				});
 			}
 
-			/* Reload the results table below */
-			loadPageNoHeader('cereus_ipam_scan.php?header=false&subnet_id=' + sid);
+			/* Reload only the results table */
+			$.get('cereus_ipam_scan.php', { action: 'results_table', subnet_id: sid }, function(html) {
+				$('#scan_results_wrapper').html(html);
+			});
 		}
 
 		$('#subnet_id').change(function() {
@@ -1103,9 +1122,11 @@ function cereus_ipam_scan_page() {
 	}
 
 	/* Show scan results if a subnet is selected */
+	print '<div id="scan_results_wrapper">';
 	if ($subnet_id > 0) {
 		cereus_ipam_scan_results_table($subnet_id);
 	}
+	print '</div>';
 }
 
 /* ==================== Scan Results Table (paginated) ==================== */
