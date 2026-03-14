@@ -463,6 +463,7 @@ function cereus_ipam_scan_page() {
 
 				/* Build full command preview for nmap/fping */
 				$cmd_preview = '';
+				$preview_cidr = '{subnet}';
 				$binary_path = '';
 				$timeout_val = cereus_ipam_scan_get_timeout();
 
@@ -482,23 +483,15 @@ function cereus_ipam_scan_page() {
 						}
 					}
 
-					$is_windows = (isset($config['cacti_server_os']) && $config['cacti_server_os'] == 'win32');
-
 					if ($method === 'nmap') {
 						$ts = max(1, (int) ceil($timeout_val / 1000));
-						$cmd_preview = cereus_ipam_escape_binary_path($binary_path)
+						$cmd_preview = $binary_path
 							. ' -sn -oX - --no-stylesheet --host-timeout ' . $ts . 's -T4 '
-							. cacti_escapeshellarg($preview_cidr);
-						if (!$is_windows) {
-							$cmd_preview .= ' 2>/dev/null';
-						}
+							. $preview_cidr;
 					} else {
-						$cmd_preview = cereus_ipam_escape_binary_path($binary_path)
+						$cmd_preview = $binary_path
 							. ' -g -r 1 -t ' . (int) $timeout_val . ' '
-							. cacti_escapeshellarg($preview_cidr);
-						if (!$is_windows) {
-							$cmd_preview .= ' 2>&1';
-						}
+							. $preview_cidr;
 					}
 				}
 
@@ -577,13 +570,15 @@ function cereus_ipam_scan_page() {
 		};
 		var cmdTemplate = <?php print json_encode($cmd_preview); ?>;
 
+		var currentPreviewCidr = <?php print json_encode($preview_cidr); ?>;
+
 		function updateCmdPreview() {
 			var $el = $('#scan_cmd_preview');
 			if (!$el.length || !cmdTemplate) return;
 			var sid = $('#subnet_id').val();
 			var cidr = (sid && subnetCidrs[sid]) ? subnetCidrs[sid] : '{subnet}';
-			/* Replace the quoted CIDR in the template */
-			var updated = cmdTemplate.replace(/'[^']*'(\s*2>[/&]|$)/, "'" + cidr + "'$1");
+			var updated = cmdTemplate.replace(currentPreviewCidr, cidr);
+			currentPreviewCidr = cidr;
 			$el.text(updated);
 		}
 
@@ -721,23 +716,8 @@ function cereus_ipam_scan_page() {
 				html += '</div>';
 			}
 
-			/* Details section: method + command */
+			/* Details section */
 			html += '<div style="padding:10px 15px;">';
-			if (methodLabel) {
-				html += '<div style="font-size:13px; margin-bottom:6px;">';
-				html += '<span style="color:#888;"><i class="fa fa-cog"></i> <?php print __esc('Method:', 'cereus_ipam'); ?></span> ';
-				html += '<strong>' + escapeHtml(methodLabel) + '</strong>';
-				html += '</div>';
-			}
-
-			if (command) {
-				html += '<div style="margin-bottom:6px;">';
-				html += '<span style="color:#888; font-size:13px;"><i class="fa fa-terminal"></i> <?php print __esc('Command:', 'cereus_ipam'); ?></span>';
-				html += '<div style="margin-top:4px;">';
-				html += '<code style="display:block; font-size:12px; background:#1a1a2e; color:#0f0; padding:6px 12px; border-radius:4px; user-select:all; word-break:break-all;">' + escapeHtml(command) + '</code>';
-				html += '</div>';
-				html += '</div>';
-			}
 
 			/* Error section */
 			if (hasError) {
@@ -884,6 +864,15 @@ function cereus_ipam_scan_page() {
 			$('#btn_force_clear').hide();
 			$('#btn_scan').prop('disabled', false).val('<?php print __esc('Ping Scan', 'cereus_ipam'); ?>');
 			$('#btn_arp_scan').prop('disabled', false);
+
+			/* Update the top command preview with the actual executed command */
+			if (data && data.command) {
+				var $el = $('#scan_cmd_preview');
+				if ($el.length) {
+					$el.text(data.command);
+				}
+				cmdTemplate = data.command;
+			}
 
 			/* Hide live feed, show dashboard */
 			$('#scan_live_container').hide();
