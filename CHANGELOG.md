@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.6.0] - 2026-03-13
+## [1.6.0] - 2026-03-14
 
 ### Fixed
 - **Nmap/fping broken on Windows** — `cacti_escapeshellcmd()` replaces backslashes with spaces, destroying paths like `C:\Program Files (x86)\Nmap\nmap.exe`; new `cereus_ipam_escape_binary_path()` helper uses `cacti_escapeshellarg()` (quoting) on Windows instead; stderr redirect `2>` also fixed for Windows paths with spaces; `is_executable()` replaced with `file_exists()` for Windows .exe detection
@@ -13,6 +13,7 @@
 - **Missing `tenant_id` column** — `plugin_cereus_ipam_sections.tenant_id` was not added on existing installs; setup.php migration now runs on plugin upgrade
 - **DHCP scope monitoring crash** — `cacti_snmp_get()` was called without loading the SNMP library first
 - **License check redeclare error** — added include guard to `license_check.php` to prevent "Cannot redeclare" fatal errors
+- **Subnet save crash "Column 'parent_id' cannot be null"** — `get_filter_request_var()` can return `null` on Windows/IIS when the form field is absent; strict `=== false` check did not catch `null`, leading to a DB insert failure; guard now uses `empty()` to catch both `null` and `false`
 
 ### Added
 - **Nmap scan method** — new `-sn` ping scan option using nmap for high-confidence host discovery; auto-detects nmap binary, configurable path in settings

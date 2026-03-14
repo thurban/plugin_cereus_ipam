@@ -9,6 +9,7 @@ Fixed in v1.6.0:
 - Missing tenant_id column on sections table for existing installs
 - DHCP scope monitoring crash (missing SNMP library)
 - License check redeclare fatal error
+- Subnet save crash on Windows/IIS ("Column 'parent_id' cannot be null")
 
 New in v1.6.0:
 - Nmap scan method (-sn ping scan) for high-confidence host discovery

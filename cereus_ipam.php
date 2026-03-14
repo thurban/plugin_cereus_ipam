@@ -88,7 +88,7 @@ function cereus_ipam_section_save() {
 		}
 	}
 
-	if ($parent_id === false || $parent_id < 0) {
+	if (empty($parent_id) || $parent_id < 0) {
 		$parent_id = 0;
 	}
 	if ($order === false) {
@@ -232,13 +232,16 @@ function cereus_ipam_subnet_save() {
 
 	/* Auto-detect parent subnet if not explicitly set */
 	$parent_id = get_filter_request_var('parent_id', FILTER_VALIDATE_INT);
-	if ($parent_id === false || $parent_id < 0) {
+	if (empty($parent_id) || $parent_id < 0) {
 		$parent_id = 0;
 	}
 
 	/* If parent_id not manually set, auto-detect the smallest containing subnet */
 	if ($parent_id == 0 && cereus_ipam_license_at_least('professional')) {
 		$parent_id = cereus_ipam_find_parent_subnet($subnet, $mask, $section_id, $id);
+		if ($parent_id === null || $parent_id === false) {
+			$parent_id = 0;
+		}
 	}
 
 	if ($id > 0) {
