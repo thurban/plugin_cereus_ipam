@@ -63,16 +63,26 @@ function cereus_ipam_dhcp_save() {
 		return;
 	}
 
-	$id             = get_filter_request_var('id');
-	$subnet_id      = get_filter_request_var('subnet_id');
-	$server_host_id = get_filter_request_var('server_host_id');
+	$id             = get_filter_request_var('id', FILTER_VALIDATE_INT);
+	$subnet_id      = get_filter_request_var('subnet_id', FILTER_VALIDATE_INT);
+	$server_host_id = get_filter_request_var('server_host_id', FILTER_VALIDATE_INT);
 	$server_ip      = cereus_ipam_sanitize_text(get_nfilter_request_var('server_ip', ''), 45);
 	$scope_name     = cereus_ipam_sanitize_text(get_nfilter_request_var('scope_name', ''), 255);
 	$oid_active     = cereus_ipam_sanitize_text(get_nfilter_request_var('oid_active', ''), 255);
 	$oid_total      = cereus_ipam_sanitize_text(get_nfilter_request_var('oid_total', ''), 255);
 	$oid_free       = cereus_ipam_sanitize_text(get_nfilter_request_var('oid_free', ''), 255);
-	$poll_interval  = get_filter_request_var('poll_interval');
+	$poll_interval  = get_filter_request_var('poll_interval', FILTER_VALIDATE_INT);
 	$enabled        = isset_request_var('enabled') ? 1 : 0;
+
+	if (empty($id) || $id === false) {
+		$id = 0;
+	}
+	if (empty($subnet_id) || $subnet_id === false) {
+		$subnet_id = 0;
+	}
+	if (empty($server_host_id) || $server_host_id === false) {
+		$server_host_id = 0;
+	}
 
 	/* Treat 0 or empty server_host_id as NULL */
 	if (empty($server_host_id)) {
@@ -221,8 +231,20 @@ function cereus_ipam_dhcp_manual_poll() {
 
 	if ($id > 0) {
 		$result = cereus_ipam_dhcp_poll_scope($id);
-		if ($result) {
-			raise_message('cereus_ipam_polled', __('DHCP scope polled successfully.', 'cereus_ipam'), MESSAGE_LEVEL_INFO);
+
+		if ($result['success']) {
+			raise_message('cereus_ipam_polled', __('DHCP scope polled successfully. Active: %s, Total: %s, Free: %s', $result['active'], $result['total'], $result['free'], 'cereus_ipam'), MESSAGE_LEVEL_INFO);
+		} elseif (!empty($result['errors'])) {
+			$oid_info = '';
+			if (!empty($result['oids'])) {
+				$oid_info = ' ' . __('Resolved OIDs: Active=%s, Total=%s, Free=%s.',
+					$result['oids']['active'], $result['oids']['total'], $result['oids']['free'], 'cereus_ipam');
+			}
+			raise_message('cereus_ipam_poll_fail',
+				__('DHCP poll returned no valid data.', 'cereus_ipam')
+				. ' ' . implode(' | ', $result['errors']) . $oid_info,
+				MESSAGE_LEVEL_ERROR
+			);
 		} else {
 			raise_message('cereus_ipam_poll_fail', __('Failed to poll DHCP scope. Check server connectivity and SNMP settings.', 'cereus_ipam'), MESSAGE_LEVEL_ERROR);
 		}
@@ -303,23 +325,23 @@ function cereus_ipam_dhcp_edit() {
 		),
 		'oid_active' => array(
 			'friendly_name' => __('OID - Active Leases', 'cereus_ipam'),
-			'description'   => __('SNMP OID to retrieve the number of active DHCP leases.', 'cereus_ipam'),
+			'description'   => __('SNMP OID for active DHCP leases. For Windows DHCP (Microsoft MIB), the subnet IP is auto-appended as index. E.g. for scope 192.168.1.0 the base OID .1.3.6.1.4.1.311.1.3.2.1.1.2 becomes .1.3.6.1.4.1.311.1.3.2.1.1.2.192.168.1.0 automatically.', 'cereus_ipam'),
 			'method'        => 'textbox',
 			'value'         => $scope['oid_active'] ?? '.1.3.6.1.4.1.311.1.3.2.1.1.2',
 			'max_length'    => 255,
 			'size'          => 60,
 		),
 		'oid_total' => array(
-			'friendly_name' => __('OID - Total Leases', 'cereus_ipam'),
-			'description'   => __('SNMP OID to retrieve the total number of DHCP leases available.', 'cereus_ipam'),
+			'friendly_name' => __('OID - Total Addresses', 'cereus_ipam'),
+			'description'   => __('SNMP OID for total DHCP addresses in scope. For Windows DHCP, the subnet IP index is auto-appended from the linked subnet.', 'cereus_ipam'),
 			'method'        => 'textbox',
 			'value'         => $scope['oid_total'] ?? '.1.3.6.1.4.1.311.1.3.2.1.1.3',
 			'max_length'    => 255,
 			'size'          => 60,
 		),
 		'oid_free' => array(
-			'friendly_name' => __('OID - Free Leases', 'cereus_ipam'),
-			'description'   => __('SNMP OID to retrieve the number of free DHCP leases.', 'cereus_ipam'),
+			'friendly_name' => __('OID - Free Addresses', 'cereus_ipam'),
+			'description'   => __('SNMP OID for free DHCP addresses in scope. For Windows DHCP, the subnet IP index is auto-appended from the linked subnet.', 'cereus_ipam'),
 			'method'        => 'textbox',
 			'value'         => $scope['oid_free'] ?? '.1.3.6.1.4.1.311.1.3.2.1.1.4',
 			'max_length'    => 255,
@@ -376,6 +398,28 @@ function cereus_ipam_dhcp_edit() {
 		print '<strong>' . __('Last Polled:', 'cereus_ipam') . '</strong> ' . html_escape($scope['last_polled'] ?? __('Never', 'cereus_ipam'));
 		print '</td>';
 		print '</tr>';
+
+		/* Show resolved OIDs so the user can see what's actually queried */
+		$subnet_ip = '';
+		if (!empty($scope['subnet_id'])) {
+			$subnet_ip = db_fetch_cell_prepared("SELECT subnet FROM plugin_cereus_ipam_subnets WHERE id = ?", array($scope['subnet_id']));
+		}
+		if (!empty($subnet_ip)) {
+			$resolved_active = cereus_ipam_dhcp_resolve_oid($scope['oid_active'], $subnet_ip);
+			$resolved_total  = cereus_ipam_dhcp_resolve_oid($scope['oid_total'], $subnet_ip);
+			$resolved_free   = cereus_ipam_dhcp_resolve_oid($scope['oid_free'], $subnet_ip);
+
+			if ($resolved_active !== $scope['oid_active'] || $resolved_total !== $scope['oid_total'] || $resolved_free !== $scope['oid_free']) {
+				print '<tr class="even">';
+				print '<td style="padding:4px 15px; color:#666; font-size:0.9em;">';
+				print '<strong>' . __('Resolved OIDs (with subnet index):', 'cereus_ipam') . '</strong><br>';
+				print __('Active:', 'cereus_ipam') . ' <code>' . html_escape($resolved_active) . '</code> &nbsp; ';
+				print __('Total:', 'cereus_ipam') . ' <code>' . html_escape($resolved_total) . '</code> &nbsp; ';
+				print __('Free:', 'cereus_ipam') . ' <code>' . html_escape($resolved_free) . '</code>';
+				print '</td>';
+				print '</tr>';
+			}
+		}
 
 		print '<tr class="odd">';
 		print '<td style="padding:8px 15px;">';
