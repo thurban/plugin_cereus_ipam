@@ -4,10 +4,12 @@ Fixed in v1.6.0:
 - Nmap and fping commands failed on Windows (backslash paths destroyed by escapeshellcmd)
 - Nmap scans appeared stuck (progress showed alive count instead of total scanned)
 - Scan completion not detected in the UI for fast-finishing scans
+- Nmap scan completion flickered through 4-5 refreshes before dashboard appeared
 - Live scan feed flooded with hundreds of "no response" entries from nmap
 - Crashed or stale scans could block future scans indefinitely
 - Missing tenant_id column on sections table for existing installs
 - DHCP scope monitoring crash (missing SNMP library)
+- DHCP scope save accepted invalid form values (missing FILTER_VALIDATE_INT)
 - License check redeclare fatal error
 - Subnet save crash on Windows/IIS ("Column 'parent_id' cannot be null")
 - Settings page crash when Thold plugin not installed (plugin_notification_lists table missing)
@@ -18,4 +20,5 @@ New in v1.6.0:
 - Dashboard-style visual scan results with stat cards and method details
 - Running scan detection on page load
 - Force clear button for stuck/crashed scans
-- Deferred conflict detection (non-blocking scan results display)
+- Smart conflict detection routing (background for manual scans, inline for scheduled)
+- DHCP poll debug logging for OID resolution troubleshooting
