@@ -519,7 +519,7 @@ function cereus_ipam_scan_page() {
 					if ($method === 'nmap') {
 						$ts = max(1, (int) ceil($timeout_val / 1000));
 						$cmd_preview = $binary_path
-							. ' -sn -oX - --no-stylesheet --host-timeout ' . $ts . 's -T4 '
+							. ' -sn --disable-arp-ping -oX - --no-stylesheet --host-timeout ' . $ts . 's -T4 '
 							. $preview_cidr;
 					} else {
 						$cmd_preview = $binary_path

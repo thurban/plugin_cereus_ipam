@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.6.1] - 2026-04-21
+
+### Fixed
+- **Nmap `--disable-arp-ping` missing from scan execution** — the flag was absent from the actual nmap command, causing `TCP_FAIL_CONNECT_ON_ICMP_ERROR errno: 10042` errors on Windows; the post-scan display incorrectly showed the flag while the real execution did not; all three code paths (preview, execution, result display) now consistently include `--disable-arp-ping`
+- **setup.php version string not bumped to 1.6.0** — `plugin_cereus_ipam_version()` still reported `1.5.0`; corrected to `1.6.1`
+
 ## [1.6.0] - 2026-03-14
 
 ### Fixed

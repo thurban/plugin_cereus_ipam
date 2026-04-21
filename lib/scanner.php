@@ -623,7 +623,7 @@ function cereus_ipam_scan_nmap($subnet_id, $subnet, $nmap_path) {
 	/* Full command as executed (for copy-paste into CLI) */
 	$timeout_sec = max(1, (int) ceil($timeout / 1000));
 	$display_cmd = cereus_ipam_escape_binary_path($nmap_path)
-		. ' -sn -oX - --no-stylesheet'
+		. ' -sn --disable-arp-ping -oX - --no-stylesheet'
 		. ' --host-timeout ' . $timeout_sec . 's'
 		. ' -T4';
 	if ($version == 6) {
@@ -695,7 +695,7 @@ function cereus_ipam_nmap_exec($nmap_path, $target, $timeout, $is_windows, $vers
 	$timeout_sec = max(1, (int) ceil($timeout / 1000));
 
 	$cmd = cereus_ipam_escape_binary_path($nmap_path)
-		. ' -sn -oX - --no-stylesheet'
+		. ' -sn --disable-arp-ping -oX - --no-stylesheet'
 		. ' --host-timeout ' . $timeout_sec . 's'
 		. ' -T4';
 
