@@ -29,6 +29,7 @@ $actions = array(
 	3 => __('Set Reserved', 'cereus_ipam'),
 	4 => __('Set Offline', 'cereus_ipam'),
 	5 => __('Set Available', 'cereus_ipam'),
+	6 => __('Set DHCP', 'cereus_ipam'),
 );
 
 $action = get_nfilter_request_var('action', '');
@@ -280,6 +281,9 @@ function cereus_ipam_address_actions() {
 						break;
 					case '5': /* available */
 						db_execute_prepared("UPDATE plugin_cereus_ipam_addresses SET state = 'available' WHERE id = ?", array($id));
+						break;
+					case '6': /* dhcp */
+						db_execute_prepared("UPDATE plugin_cereus_ipam_addresses SET state = 'dhcp' WHERE id = ?", array($id));
 						break;
 				}
 			}

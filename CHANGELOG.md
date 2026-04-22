@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.6.3] - 2026-04-22
+
+### Added
+- **Bulk "Set DHCP" action on Addresses page** — select multiple addresses and mark them as DHCP state in one action, so they appear in the DHCP column of subnet reports
+
 ## [1.6.2] - 2026-04-22
 
 ### Fixed
