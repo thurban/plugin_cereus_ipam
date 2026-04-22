@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.6.2] - 2026-04-22
+
+### Fixed
+- **Nmap stderr noise on Windows Server** — `TCP_FAIL_CONNECT_ON_ICMP_ERROR errno: 10042` / `setsockopt: No error` lines are non-fatal optimisation hints emitted on Windows Server; they no longer trigger the red error box in the scan results UI
+
+### Added
+- **Send Email Report Now button** — Reports page gains a "Send Email Now" button that dispatches the scheduled email report immediately using the configured recipients and report sections, without waiting for the next poller cycle
+
 ## [1.6.1] - 2026-04-21
 
 ### Fixed

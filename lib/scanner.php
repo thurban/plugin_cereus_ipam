@@ -723,6 +723,20 @@ function cereus_ipam_nmap_exec($nmap_path, $target, $timeout, $is_windows, $vers
 	if (file_exists($stderr_file)) {
 		$stderr = trim(file_get_contents($stderr_file));
 		@unlink($stderr_file);
+
+		// Strip non-fatal nmap warnings that appear on Windows Server when the
+		// TCP_FAIL_CONNECT_ON_ICMP_ERROR socket option is unavailable (errno 10042).
+		// These are optimisation hints only — nmap continues and produces correct results.
+		if ($stderr !== '') {
+			$lines = explode("\n", $stderr);
+			$lines = array_filter($lines, function($line) {
+				$l = trim($line);
+				return $l !== ''
+					&& strpos($l, 'TCP_FAIL_CONNECT_ON_ICMP_ERROR') === false
+					&& strpos($l, 'setsockopt:') === false;
+			});
+			$stderr = trim(implode("\n", $lines));
+		}
 	}
 
 	/* Parse XML output */

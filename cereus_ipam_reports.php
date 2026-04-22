@@ -20,6 +20,7 @@ include_once('./plugins/cereus_ipam/lib/validation.php');
 include_once('./plugins/cereus_ipam/lib/ip_utils.php');
 include_once('./plugins/cereus_ipam/lib/functions.php');
 include_once('./plugins/cereus_ipam/lib/changelog.php');
+include_once('./plugins/cereus_ipam/lib/report_scheduler.php');
 
 $action = get_nfilter_request_var('action', '');
 
@@ -29,6 +30,9 @@ switch ($action) {
 		break;
 	case 'export_pdf':
 		cereus_ipam_report_export_pdf();
+		break;
+	case 'send_now':
+		cereus_ipam_report_send_now();
 		break;
 	default:
 		top_header();
@@ -155,6 +159,8 @@ function cereus_ipam_reports_page() {
 								<input type='button' class='ui-button' id='clear' value='<?php print __esc('Clear', 'cereus_ipam'); ?>'>
 								<input type='button' class='ui-button' id='export_csv' value='<?php print __esc('Export CSV', 'cereus_ipam'); ?>'>
 								<input type='button' class='ui-button' id='export_pdf' value='<?php print __esc('Export PDF', 'cereus_ipam'); ?>'>
+								<input type='button' class='ui-button' id='send_report_now' value='<?php print __esc('Send Email Now', 'cereus_ipam'); ?>' title='<?php print __esc('Send the scheduled email report immediately using the configured recipients and settings.', 'cereus_ipam'); ?>'>
+								<span id='send_report_result' style='margin-left:8px;font-size:.9em;'></span>
 							</span>
 						</td>
 					</tr>
@@ -234,6 +240,27 @@ function cereus_ipam_reports_page() {
 				$('#clear').click(function() { loadPageNoHeader('cereus_ipam_reports.php?header=false&clear=1'); });
 				$('#export_csv').click(function() { exportCSV(); });
 				$('#export_pdf').click(function() { exportPDF(); });
+				$('#send_report_now').click(function() {
+					var btn = $(this);
+					var res = $('#send_report_result');
+					btn.prop('disabled', true).val('<?php print __esc('Sending...', 'cereus_ipam'); ?>');
+					res.css('color', '#888').text('');
+					$.post('cereus_ipam_reports.php', { action: 'send_now', __csrf_magic: csrfMagicToken })
+						.done(function(data) {
+							if (data.ok) {
+								res.css('color', '#27ae60').text(data.message || '<?php print __esc('Sent.', 'cereus_ipam'); ?>');
+							} else {
+								res.css('color', '#e74c3c').text(data.error || '<?php print __esc('Failed.', 'cereus_ipam'); ?>');
+							}
+						})
+						.fail(function() {
+							res.css('color', '#e74c3c').text('<?php print __esc('Request failed.', 'cereus_ipam'); ?>');
+						})
+						.always(function() {
+							btn.prop('disabled', false).val('<?php print __esc('Send Email Now', 'cereus_ipam'); ?>');
+							setTimeout(function() { res.text(''); }, 8000);
+						});
+				});
 			});
 			</script>
 		</td>
@@ -1454,4 +1481,44 @@ function cereus_ipam_pdf_data_reconciliation(&$headers, &$rows, $subnet_id) {
 			$r['last_seen'] ?? '',
 		);
 	}
+}
+
+/* ==================== Send Report Now (AJAX) ==================== */
+
+function cereus_ipam_report_send_now() {
+	header('Content-Type: application/json; charset=utf-8');
+
+	if (!cereus_ipam_license_at_least('professional')) {
+		echo json_encode(array('ok' => false, 'error' => __('Professional license required.', 'cereus_ipam')));
+		exit;
+	}
+
+	$manual_recipients = trim(read_config_option('cereus_ipam_report_recipients'));
+	$notify_list_id    = (int) read_config_option('cereus_ipam_report_notify_list');
+	$recipients        = cereus_ipam_merge_notification_emails($manual_recipients, $notify_list_id);
+
+	if (empty($recipients)) {
+		echo json_encode(array('ok' => false, 'error' => __('No recipients configured. Add email addresses in Settings → IPAM → Scheduled Reports.', 'cereus_ipam')));
+		exit;
+	}
+
+	$report_types = array();
+	if (read_config_option('cereus_ipam_report_inc_utilization') == 'on') $report_types[] = 'utilization';
+	if (read_config_option('cereus_ipam_report_inc_states')      == 'on') $report_types[] = 'states';
+	if (read_config_option('cereus_ipam_report_inc_stale')       == 'on') $report_types[] = 'stale';
+
+	if (empty($report_types)) {
+		/* Nothing ticked in settings — send all sections */
+		$report_types = array('utilization', 'states', 'stale');
+	}
+
+	$success = cereus_ipam_send_scheduled_report($recipients, $report_types);
+
+	if ($success) {
+		cacti_log('CEREUS_IPAM: Manual report sent to ' . $recipients, false, 'CEREUS_IPAM');
+		echo json_encode(array('ok' => true, 'message' => __('Report sent successfully.', 'cereus_ipam')));
+	} else {
+		echo json_encode(array('ok' => false, 'error' => __('Failed to send report. Check Cacti mail settings.', 'cereus_ipam')));
+	}
+	exit;
 }
